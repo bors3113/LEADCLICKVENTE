@@ -3,7 +3,7 @@ const fs = require('fs');
 const path = require('path');
 
 // Ensure the results directory exists
-const resultsDir = path.join(__dirname, '../../results');
+const resultsDir = path.join(process.cwd(), 'results');
 fs.mkdirSync(resultsDir, { recursive: true });
 
 

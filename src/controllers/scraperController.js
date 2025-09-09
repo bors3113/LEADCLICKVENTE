@@ -203,7 +203,7 @@ const scraperController = {
             
             // Prevent path traversal attacks
             const sanitizedFilename = path.basename(file);
-            const filePath = path.join(__dirname, '../../results', sanitizedFilename);
+            const filePath = path.join(process.cwd(), 'results', sanitizedFilename);
             
             // Check if file exists
             if (!fs.existsSync(filePath)) {
