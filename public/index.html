@@ -1,0 +1,443 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Google Maps Scraper</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .form-group {
+            margin-bottom: 15px;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+        }
+        input[type="text"], input[type="number"] {
+            width: 100%;
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+        textarea {
+            width: 100%;
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-family: Arial, sans-serif;
+            resize: vertical;
+        }
+        select {
+            width: 100%;
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+        button {
+            background-color: #4CAF50;
+            color: white;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        button:hover {
+            background-color: #45a049;
+        }
+        #status {
+            margin-top: 20px;
+            padding: 10px;
+            border-radius: 4px;
+            white-space: pre-line;
+        }
+        .success {
+            background-color: #dff0d8;
+            color: #3c763d;
+        }
+        .error {
+            background-color: #f2dede;
+            color: #a94442;
+        }
+        .download-link {
+            display: inline-block;
+            margin-top: 10px;
+            padding: 8px 16px;
+            background-color: #337ab7;
+            color: white;
+            text-decoration: none;
+            border-radius: 4px;
+        }
+        .download-link:hover {
+            background-color: #286090;
+        }
+        .progress-container {
+            margin-top: 15px;
+            display: none;
+            padding: 10px;
+            background-color: #f8f9fa;
+            border-radius: 4px;
+            border: 1px solid #ddd;
+        }
+        .progress-bar {
+            display: none; /* Hide the progress bar */
+        }
+        .progress {
+            display: none; /* Hide the progress */
+        }
+        .stats {
+            display: flex;
+            justify-content: space-between;
+            font-size: 16px;
+            color: #333;
+            font-weight: 500;
+        }
+    </style>
+</head>
+<body>
+    <div class="container mt-5">
+        <h1 class="text-center mb-4">Google Maps Scraper</h1>
+        
+        <div class="form-group">
+            <label for="searchMode">Search Mode:</label>
+            <select id="searchMode" onchange="toggleSearchMode()">
+                <option value="single">Single Location</option>
+                <option value="multiple">Multiple Locations</option>
+            </select>
+        </div>
+        
+        <div id="singleSearchGroup" class="form-group">
+            <label for="search">Search Query:</label>
+            <input type="text" id="search" placeholder="e.g., restaurants in Paris">
+        </div>
+        
+        <div id="multipleSearchGroup" class="form-group" style="display: none;">
+            <label for="multipleSearch">Multiple Search Queries (one per line):</label>
+            <textarea id="multipleSearch" rows="5" placeholder="restaurants in Paris&#10;restaurants in London&#10;restaurants in Berlin"></textarea>
+        </div>
+        
+        <div class="form-group">
+            <label for="limit">Result Limit (optional):</label>
+            <input type="number" id="limit" placeholder="e.g., 20 (leave empty for no limit)" min="1">
+        </div>
+        
+        <div class="form-group">
+            <label for="globalLimit">Limit Type:</label>
+            <select id="globalLimit">
+                <option value="false">Per Query (each query gets its own limit)</option>
+                <option value="true">Global (limit applies across all queries combined)</option>
+            </select>
+        </div>
+        
+        <div class="form-group">
+            <label for="format">Output Format:</label>
+            <select id="format">
+                <option value="excel">Excel (.xlsx)</option>
+                <option value="csv">CSV</option>
+            </select>
+        </div>
+        <div class="row mt-3">
+            <div class="col-md-12 text-center">
+                <button id="scrapeBtn" class="btn btn-primary">Start Scraping</button>
+                <button id="stopScrapeBtn" class="btn btn-danger ml-2" disabled>Stop Scraping</button>
+                <button id="exportBtn" class="btn btn-success ml-2" disabled>Export to Excel</button>
+            </div>
+        </div>
+        <div id="status"></div>
+        
+        <!-- New Progress Section -->
+        <div id="progress-container" class="progress-container">
+            <h3>Scraping Status</h3>
+            <!-- Keep the progress div but keep it hidden -->
+            <div class="progress-bar">
+                <div id="progress" class="progress" style="width: 0%">0%</div>
+            </div>
+            <div class="stats">
+                <span id="businesses-count">Elements scraped: 0</span>
+                <span id="elapsed-time">Time: 0s</span>
+            </div>
+        </div>
+        
+        <div id="download-container"></div>
+    </div>
+
+    <script>
+        const scrapeBtn = document.getElementById('scrapeBtn');
+        const stopScrapeBtn = document.getElementById('stopScrapeBtn');
+        const exportBtn = document.getElementById('exportBtn');
+        const progressContainer = document.getElementById('progress-container');
+        const progressBar = document.getElementById('progress');
+        const businessesCount = document.getElementById('businesses-count');
+        const elapsedTime = document.getElementById('elapsed-time');
+        
+        let statusPollInterval = null;
+        
+        // Function to toggle between single and multiple search modes
+        function toggleSearchMode() {
+            const searchMode = document.getElementById('searchMode').value;
+            const singleSearchGroup = document.getElementById('singleSearchGroup');
+            const multipleSearchGroup = document.getElementById('multipleSearchGroup');
+            
+            if (searchMode === 'single') {
+                singleSearchGroup.style.display = 'block';
+                multipleSearchGroup.style.display = 'none';
+            } else {
+                singleSearchGroup.style.display = 'none';
+                multipleSearchGroup.style.display = 'block';
+            }
+        }
+        
+        // Function to update the progress display
+        async function updateScrapingProgress() {
+            try {
+                const response = await fetch('http://localhost:3008/api/scrape-status');
+                
+                if (!response.ok) {
+                    console.error('Failed to fetch scraping status');
+                    return;
+                }
+                
+                const data = await response.json();
+                
+                // If scraping is active, show the progress container
+                if (data.isActive) {
+                    progressContainer.style.display = 'block';
+                    
+                    // Update stats - simplified to just show elements scraped count
+                    businessesCount.textContent = `Elements scraped: ${data.itemsScraped}`;
+                    elapsedTime.textContent = `Time: ${data.elapsedTimeSeconds}s`;
+                } else if (data.itemsScraped > 0) {
+                    // If scraping is complete but we have data, show final status
+                    progressContainer.style.display = 'block';
+                    businessesCount.textContent = `Elements scraped: ${data.itemsScraped}`;
+                    elapsedTime.textContent = `Time: ${data.elapsedTimeSeconds}s`;
+                    
+                    // Clear the interval if scraping is done
+                    if (statusPollInterval) {
+                        clearInterval(statusPollInterval);
+                        statusPollInterval = null;
+                    }
+                } else {
+                    // No active scraping and no data
+                    progressContainer.style.display = 'none';
+                }
+            } catch (error) {
+                console.error('Error updating progress:', error);
+            }
+        }
+        
+        // Add event listener for the scrape button
+        scrapeBtn.addEventListener('click', startScraping);
+        
+        async function startScraping() {
+            const searchMode = document.getElementById('searchMode').value;
+            const searchQuery = document.getElementById('search').value;
+            const multipleSearch = document.getElementById('multipleSearch').value;
+            const limit = document.getElementById('limit').value;
+            const format = document.getElementById('format').value;
+            const statusDiv = document.getElementById('status');
+            const downloadContainer = document.getElementById('download-container');
+            
+            // Validate input based on search mode
+            if (searchMode === 'single') {
+                if (!searchQuery.trim()) {
+                    statusDiv.className = 'error';
+                    statusDiv.textContent = 'Please enter a search query';
+                    return;
+                }
+            } else {
+                if (!multipleSearch.trim()) {
+                    statusDiv.className = 'error';
+                    statusDiv.textContent = 'Please enter at least one search query';
+                    return;
+                }
+            }
+
+            try {
+                statusDiv.className = '';
+                statusDiv.textContent = 'Scraping in progress...';
+                downloadContainer.innerHTML = '';
+                
+                // Reset progress display - fix the null reference error
+                if (progressBar) {
+                    progressBar.style.width = '0%';
+                    progressBar.textContent = '0%';
+                }
+                businessesCount.textContent = 'Elements scraped: 0';
+                elapsedTime.textContent = 'Time: 0s';
+                progressContainer.style.display = 'block';
+                
+                // Start polling for status updates
+                if (statusPollInterval) {
+                    clearInterval(statusPollInterval);
+                }
+                statusPollInterval = setInterval(updateScrapingProgress, 2000);
+                
+                // Disable scrape button and enable stop button during scraping
+                scrapeBtn.disabled = true;
+                stopScrapeBtn.disabled = false;
+                
+                // Prepare request body based on search mode
+                let requestBody = { format };
+                
+                if (searchMode === 'single') {
+                    requestBody.query = searchQuery;
+                } else {
+                    // Parse multiple queries (split by newlines and filter empty lines)
+                    const queries = multipleSearch.split('\n')
+                        .map(q => q.trim())
+                        .filter(q => q.length > 0);
+                    requestBody.queries = queries;
+                }
+                
+                // Add limit if specified
+                if (limit && limit.trim() !== '') {
+                    requestBody.limit = parseInt(limit);
+                }
+                
+                // Add global limit setting
+                const globalLimit = document.getElementById('globalLimit').value;
+                requestBody.globalLimit = globalLimit === 'true';
+                
+                const response = await fetch('http://localhost:3008/api/scrape', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(requestBody)
+                });
+
+                const data = await response.json();
+
+                if (response.ok) {
+                    statusDiv.className = 'success';
+                    
+                    // Create detailed success message
+                    let successMessage = `Scraping completed successfully!`;
+                    
+                    if (data.queryResults && data.queryResults.length > 0) {
+                        successMessage += `\n\nQuery Results:`;
+                        data.queryResults.forEach((result, index) => {
+                            if (result.success) {
+                                successMessage += `\n• ${result.query}: ${result.resultsCount} results`;
+                            } else {
+                                successMessage += `\n• ${result.query}: Failed - ${result.error}`;
+                            }
+                        });
+                        successMessage += `\n\nTotal Results: ${data.totalResultsCount}`;
+                    } else {
+                        successMessage += ` Found ${data.resultsCount || data.totalResultsCount} results.`;
+                    }
+                    
+                    if (data.limit && data.limit !== 'No limit') {
+                        successMessage += `\nLimit applied: ${data.limit} results per query.`;
+                    }
+                    
+                    successMessage += `\n\n📁 File is being saved in real-time as data is scraped!`;
+                    
+                    statusDiv.textContent = successMessage;
+                    
+                    // Add download link
+                    if (data.downloadUrl) {
+                        const downloadLink = document.createElement('a');
+                        downloadLink.href = data.downloadUrl;
+                        downloadLink.className = 'download-link';
+                        downloadLink.textContent = `📥 Download ${format === 'csv' ? 'CSV' : 'Excel'} File (Real-time)`;
+                        downloadLink.target = '_blank';
+                        downloadContainer.appendChild(downloadLink);
+                        
+                        // Add note about real-time saving
+                        const note = document.createElement('p');
+                        note.style.marginTop = '10px';
+                        note.style.fontSize = '14px';
+                        note.style.color = '#666';
+                        note.textContent = '💡 The file is updated in real-time as data is scraped. You can download it anytime during or after scraping.';
+                        downloadContainer.appendChild(note);
+                    }
+                    
+                    // Stop polling for updates
+                    if (statusPollInterval) {
+                        clearInterval(statusPollInterval);
+                        statusPollInterval = null;
+                    }
+                } else {
+                    throw new Error(data.error || 'Scraping failed');
+                }
+            } catch (error) {
+                statusDiv.className = 'error';
+                statusDiv.textContent = `Error: ${error.message}`;
+                
+                // Stop polling for updates on error
+                if (statusPollInterval) {
+                    clearInterval(statusPollInterval);
+                    statusPollInterval = null;
+                }
+            } finally {
+                // Re-enable scrape button and disable stop button when done
+                scrapeBtn.disabled = false;
+                stopScrapeBtn.disabled = true;
+            }
+        }
+
+        // Add event listener for the stop button
+        stopScrapeBtn.addEventListener('click', async () => {
+            try {
+                const statusDiv = document.getElementById('status');
+                statusDiv.className = '';
+                statusDiv.textContent = 'Requesting scraping to stop...';
+                
+                const response = await fetch('http://localhost:3008/api/stop-scrape', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    }
+                });
+                
+                // Log the raw response for debugging
+                console.log('Stop scrape response status:', response.status);
+                
+                const data = await response.json();
+                console.log('Stop scrape response data:', data);
+                
+                // Accept any successful response, even if success flag isn't explicitly true
+                if (response.ok) {
+                    statusDiv.className = 'success';
+                    statusDiv.textContent = data.message || 'Scraping process stopped. The collected data has been saved.';
+                    
+                    // Re-enable scrape button and disable stop button
+                    scrapeBtn.disabled = false;
+                    stopScrapeBtn.disabled = true;
+                    
+                    // Do a final progress update
+                    await updateScrapingProgress();
+                    
+                    // Stop polling for updates
+                    if (statusPollInterval) {
+                        clearInterval(statusPollInterval);
+                        statusPollInterval = null;
+                    }
+                } else {
+                    statusDiv.className = 'error';
+                    statusDiv.textContent = `Failed to stop scraping: ${data.message || 'Unknown error'}`;
+                }
+            } catch (error) {
+                console.error('Error stopping scraping:', error);
+                const statusDiv = document.getElementById('status');
+                statusDiv.className = 'error';
+                statusDiv.textContent = `Error: ${error.message}`;
+                
+                // Re-enable scrape button in case of error
+                scrapeBtn.disabled = false;
+                stopScrapeBtn.disabled = true;
+            }
+        });
+        
+        // Check for any active scraping on page load
+        updateScrapingProgress();
+    </script>
+</body>
+</html> 
