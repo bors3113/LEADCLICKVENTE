@@ -4,9 +4,8 @@ const path = require('path');
 
 // Ensure the results directory exists
 const resultsDir = path.join(__dirname, '../../results');
-if (!fs.existsSync(resultsDir)) {
-  fs.mkdirSync(resultsDir, { recursive: true });
-}
+fs.mkdirSync(resultsDir, { recursive: true });
+
 
 /**
  * Format data for export, processing nested contact information
