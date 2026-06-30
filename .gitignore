@@ -1,0 +1,6 @@
+node_modules/
+results/
+.env
+debug_*.html
+debug_*.png
+*.local

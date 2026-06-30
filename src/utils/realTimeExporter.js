@@ -1,43 +1,13 @@
 const XLSX = require('xlsx');
 const fs = require('fs');
 const path = require('path');
+const { formatItemForExport } = require('./formatExportItem');
 
 // Ensure the results directory exists
 const resultsDir = path.join(process.cwd(), 'results');
 fs.mkdirSync(resultsDir, { recursive: true });
 
-
-/**
- * Format data for export, processing nested contact information
- * @param {Object} item - Single object to format
- * @returns {Object} - Formatted data for export
- */
-function formatItemForExport(item) {
-  // Create a new object with basic properties
-  const formattedItem = { ...item };
-  
-  // Handle contactInfo if it exists
-  if (item.contactInfo) {
-    // Add email information
-    formattedItem.emails = item.contactInfo.emails ? item.contactInfo.emails.join(', ') : '';
-    
-    // Add social media information
-    if (item.contactInfo.socialMedia) {
-      Object.entries(item.contactInfo.socialMedia).forEach(([platform, links]) => {
-        if (links && links.length > 0) {
-          formattedItem[`${platform}_links`] = links.join(', ');
-        } else {
-          formattedItem[`${platform}_links`] = '';
-        }
-      });
-    }
-    
-    // Remove the nested contactInfo object
-    delete formattedItem.contactInfo;
-  }
-  
-  return formattedItem;
-}
+const SAVE_BATCH_SIZE = 5; // flush to disk every N items
 
 class RealTimeExporter {
   constructor(filename, format = 'excel') {
@@ -48,6 +18,7 @@ class RealTimeExporter {
     this.worksheet = XLSX.utils.json_to_sheet([]);
     this.data = [];
     this.isInitialized = false;
+    this._pendingSave = 0;
   }
 
   /**
@@ -72,25 +43,21 @@ class RealTimeExporter {
    */
   addItem(item) {
     try {
-      // Format the item
-      const formattedItem = formatItemForExport(item);
-      
-      // Add to data array
-      this.data.push(formattedItem);
-      
-      // Update worksheet with all data
-      this.worksheet = XLSX.utils.json_to_sheet(this.data);
-      
-      // Update workbook
-      this.workbook.Sheets['Results'] = this.worksheet;
-      
-      // Save to file
-      this.saveFile();
-      
-      console.log(`Added item to real-time export: ${item.name || 'Unknown'}`);
+      this.data.push(formatItemForExport(item));
+      this._pendingSave++;
+      if (this._pendingSave >= SAVE_BATCH_SIZE) {
+        this._flush();
+      }
     } catch (error) {
       console.error('Error adding item to real-time export:', error);
     }
+  }
+
+  _flush() {
+    this.worksheet = XLSX.utils.json_to_sheet(this.data);
+    this.workbook.Sheets['Results'] = this.worksheet;
+    this.saveFile();
+    this._pendingSave = 0;
   }
 
   /**
@@ -99,21 +66,8 @@ class RealTimeExporter {
    */
   addItems(items) {
     try {
-      items.forEach(item => {
-        const formattedItem = formatItemForExport(item);
-        this.data.push(formattedItem);
-      });
-      
-      // Update worksheet with all data
-      this.worksheet = XLSX.utils.json_to_sheet(this.data);
-      
-      // Update workbook
-      this.workbook.Sheets['Results'] = this.worksheet;
-      
-      // Save to file
-      this.saveFile();
-      
-      console.log(`Added ${items.length} items to real-time export`);
+      items.forEach(item => this.data.push(formatItemForExport(item)));
+      this._flush();
     } catch (error) {
       console.error('Error adding items to real-time export:', error);
     }
@@ -154,7 +108,7 @@ class RealTimeExporter {
    * Finalize the export (optional, for cleanup)
    */
   finalize() {
-    this.saveFile();
+    if (this._pendingSave > 0) this._flush();
     console.log(`Real-time export finalized: ${this.data.length} items saved to ${this.filepath}`);
   }
 }

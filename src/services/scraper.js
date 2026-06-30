@@ -1,5 +1,7 @@
+const config = require('../config');
 const puppeteer = require('puppeteer');
 const fs = require('fs');
+const fsp = require('fs/promises');
 const { Cluster } = require('puppeteer-cluster');
 const puppeteerExtra = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
@@ -12,7 +14,7 @@ puppeteerExtra.use(StealthPlugin());
 
 // HTTP client configuration for scraping
 const getHttpHeaders = () => ({
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.110 Safari/537.36',
+    'User-Agent': config.browser.userAgent,
     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
     'Accept-Language': 'en-US,en;q=0.5',
     'Accept-Encoding': 'gzip, deflate',
@@ -22,7 +24,7 @@ const getHttpHeaders = () => ({
 
 // Create axios instance with common config
 const httpClient = axios.create({
-    timeout: 30000,
+    timeout: config.scraper.httpTimeoutMs,
     headers: getHttpHeaders(),
     maxRedirects: 5,
 });
@@ -33,11 +35,71 @@ function formatSearchQuery(query) {
     return query.trim().replace(/\s+/g, '+');
   }
 
+  // Read the current map viewport center (lat/lng/zoom) from the page URL.
+  // Google rewrites the URL to include "@<lat>,<lng>,<zoom>z" once the map
+  // settles, so this lets us re-center deterministically instead of mouse drags.
+  // Returns null if the URL doesn't yet contain coordinates.
+  function getMapCenter(page) {
+      const match = page.url().match(/@(-?\d+\.\d+),(-?\d+\.\d+),(\d+(?:\.\d+)?)z/);
+      if (!match) return null;
+      return {
+          lat: parseFloat(match[1]),
+          lng: parseFloat(match[2]),
+          zoom: parseFloat(match[3])
+      };
+  }
+
+  // Build an overlapping grid of viewport centers around a start point.
+  // Tile size is derived from the Web Mercator meters-per-pixel formula so the
+  // grid adapts to zoom and latitude rather than using fixed pixel offsets.
+  // ringCount controls how far out the grid extends (ringCount=1 => 3x3 grid).
+  function buildTiledCenters(centerLat, centerLng, zoom, ringCount = 1, viewport = config.browser.defaultViewport) {
+      // Meters per pixel at this zoom/latitude (standard Web Mercator).
+      const metersPerPixel = (156543.03392 * Math.cos(centerLat * Math.PI / 180)) / Math.pow(2, zoom);
+
+      // Width/height of one viewport in meters. Overlap tiles at 60% of the
+      // viewport so businesses near a tile boundary aren't missed.
+      const overlapFactor = 0.6;
+      const stepMetersX = viewport.width * metersPerPixel * overlapFactor;
+      const stepMetersY = viewport.height * metersPerPixel * overlapFactor;
+
+      // Convert a meters offset to a lat/lng delta.
+      const metersToLat = (m) => m / 111320;
+      const metersToLng = (m) => m / (111320 * Math.cos(centerLat * Math.PI / 180));
+
+      const centers = [];
+      for (let row = -ringCount; row <= ringCount; row++) {
+          for (let col = -ringCount; col <= ringCount; col++) {
+              centers.push({
+                  lat: centerLat + metersToLat(row * stepMetersY),
+                  lng: centerLng + metersToLng(col * stepMetersX),
+                  zoom
+              });
+          }
+      }
+      return centers;
+  }
+
+  // Detect Google CAPTCHA / blocking / rate-limit pages by inspecting body text.
+  // Reused after the first load and after every tile navigation.
+  async function checkForBlocking(page) {
+      const indicators = await page.evaluate(() => {
+          const bodyText = document.body.innerText.toLowerCase();
+          return {
+              hasCaptcha: bodyText.includes('captcha') || bodyText.includes('verify'),
+              hasBlocked: bodyText.includes('blocked') || bodyText.includes('access denied'),
+              hasRateLimit: bodyText.includes('rate limit') || bodyText.includes('too many requests')
+          };
+      });
+      indicators.isBlocked = indicators.hasCaptcha || indicators.hasBlocked || indicators.hasRateLimit;
+      return indicators;
+  }
+
   async function scrapeCurrentView(page, limit = null) {
     const results = [];
     const observedNames = new Set();
     const processedLinks = new Set();
-    const CONCURRENT_LIMIT = 10;
+    const CONCURRENT_LIMIT = config.scraper.concurrentLimit;
     let limitReached = false;
     let uniqueItemsFound = 0; // Track unique items found
     const DEDUPLICATION_INTERVAL = 10; // Check for duplicates every 10 items
@@ -112,8 +174,26 @@ function formatSearchQuery(query) {
     };
 
     let unchangedScrolls = 0;
-    const maxUnchangedScrolls = 20; // Reduced from 5 to 3 for faster completion
-    
+    const maxUnchangedScrolls = config.scraper.maxUnchangedScrolls;
+
+    // Detect Google's "You've reached the end of the list" sentinel so we can
+    // stop the moment the feed is exhausted instead of guessing with
+    // maxUnchangedScrolls (which can stop early or spin needlessly).
+    const reachedEndOfList = async () => {
+        return await page.evaluate(() => {
+            const text = document.body.innerText.toLowerCase();
+            if (text.includes("you've reached the end of the list") ||
+                text.includes('reached the end of the list') ||
+                text.includes("vous êtes arrivé à la fin de la liste") ||
+                text.includes('fin de la liste')) {
+                return true;
+            }
+            // Fallback: Google renders an end-of-feed spacer with class p2Du4d /
+            // an empty .HlvSq node at the bottom of a fully-loaded feed.
+            return document.querySelector('.PbZDve, .m6QErb .p2Du4d') !== null;
+        });
+    };
+
     const processingQueue = [];
 
     // In your scrapeCurrentView function, modify the processBatch function:
@@ -139,7 +219,7 @@ function formatSearchQuery(query) {
                     }
                 });
                 
-                await newPage.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.110 Safari/537.36');
+                await newPage.setUserAgent(config.browser.userAgent);
                 
                 await newPage.goto(result.link, { 
                     waitUntil: 'networkidle2',
@@ -308,6 +388,12 @@ function formatSearchQuery(query) {
 
         if (!foundNew) {
             unchangedScrolls++;
+            // Only trust the end-of-list sentinel after a scroll yielded nothing
+            // new, so we don't bail while the feed is still lazy-loading.
+            if (await reachedEndOfList()) {
+                console.log('Reached end of results list. Stopping scroll.');
+                break;
+            }
         } else {
             unchangedScrolls = 0;
         }
@@ -549,7 +635,80 @@ async function interactWithMap(page, mapElement, limit = null) {
 }
 
 
-async function scrapeInitialData(searchQuery, limit = null, format = 'excel') {
+// Maximize coverage by re-centering the map viewport across a deterministic,
+// zoom-aware grid of points (via the Maps URL) and re-scraping the feed at each.
+// Replaces blind pixel-based mouse dragging. Returns an array of unique results.
+async function navigateTiles(page, query, startCenter, limit = null, ringCount = config.scraper.tileRings) {
+    if (limit !== null && (limit <= 0 || isNaN(limit))) {
+        console.log(`Invalid limit value: ${limit}. Skipping tiled navigation.`);
+        return [];
+    }
+
+    const formattedQuery = formatSearchQuery(query);
+    const centers = buildTiledCenters(startCenter.lat, startCenter.lng, startCenter.zoom, ringCount);
+    console.log(`Tiled navigation: ${centers.length} tiles (ringCount=${ringCount}) around @${startCenter.lat},${startCenter.lng},${startCenter.zoom}z`);
+
+    const allResults = new Set();
+    let limitReached = false;
+
+    for (const center of centers) {
+        if (isStopRequestedGlobal || limitReached) {
+            console.log('Stop requested or limit reached during tiled navigation. Halting.');
+            break;
+        }
+
+        const tileUrl = `https://www.google.com/maps/search/${formattedQuery}/@${center.lat},${center.lng},${center.zoom}z`;
+        console.log(`Navigating tile @${center.lat.toFixed(6)},${center.lng.toFixed(6)},${center.zoom}z`);
+
+        try {
+            await retryOperation(async () => {
+                await page.goto(tileUrl, {
+                    waitUntil: 'domcontentloaded',
+                    timeout: config.scraper.navigationTimeoutMs
+                });
+                // Let the feed settle.
+                await page.evaluate(() => new Promise(resolve => setTimeout(resolve, 2000)));
+
+                // Bail out (and let retryOperation back off) if Google blocks us.
+                const blocking = await checkForBlocking(page);
+                if (blocking.isBlocked) {
+                    throw new Error('Blocked during tiled navigation: ' + JSON.stringify(blocking));
+                }
+            }, 3, 5000);
+        } catch (navError) {
+            console.error(`Tile navigation failed, skipping this tile: ${navError.message}`);
+            // If we're being persistently blocked, stop the whole run and return
+            // what we have rather than hammering Google further.
+            if (navError.message.includes('Blocked during tiled navigation')) {
+                console.log('Persistent blocking detected. Aborting tiled navigation with partial results.');
+                break;
+            }
+            continue;
+        }
+
+        const remainingLimit = limit ? Math.max(0, limit - allResults.size) : null;
+        const results = await scrapeCurrentView(page, remainingLimit);
+        results.forEach(result => allResults.add(JSON.stringify(result)));
+
+        console.log(`Tile yielded ${results.length} results. Total unique so far: ${allResults.size}`);
+
+        if (limit && allResults.size >= limit) {
+            console.log(`Reached limit of ${limit} unique results during tiled navigation. Stopping.`);
+            limitReached = true;
+            break;
+        }
+
+        // Randomized jitter between tiles to reduce rate-limiting.
+        const { tileJitterMinMs, tileJitterMaxMs } = config.scraper;
+        const jitter = tileJitterMinMs + Math.random() * (tileJitterMaxMs - tileJitterMinMs);
+        await page.evaluate(ms => new Promise(resolve => setTimeout(resolve, ms)), jitter);
+    }
+
+    return Array.from(allResults).map(item => JSON.parse(item));
+}
+
+
+async function scrapeInitialData(searchQuery, limit = null, format = 'excel', tileRings = config.scraper.tileRings) {
     console.log('Starting initial scraping...');
     
     // Reset stop flag and scraping stats at the beginning of a new scrape
@@ -570,20 +729,7 @@ async function scrapeInitialData(searchQuery, limit = null, format = 'excel') {
     
     console.log(`Real-time export initialized: ${realTimeExporter.getFilePath()}`);
     
-    const browser = await puppeteer.launch({ 
-        headless: true,
-        args: [
-          '--no-sandbox', 
-          '--disable-setuid-sandbox', 
-          '--disable-dev-shm-usage',
-          '--disable-gpu', 
-          '--disable-extensions',
-          '--disable-backgrounding-occluded-windows',
-          '--disable-renderer-backgrounding',
-          '--disk-cache-size=33554432' // 32MB disk cache
-        ],
-        defaultViewport: { width: 1280, height: 800 }
-    });
+    let browser = await puppeteer.launch(config.browser);
     
     const page = await browser.newPage();
     
@@ -599,7 +745,7 @@ async function scrapeInitialData(searchQuery, limit = null, format = 'excel') {
     });
     
     // Set a realistic user agent
-    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.110 Safari/537.36');
+    await page.setUserAgent(config.browser.userAgent);
     
     const formattedQuery = formatSearchQuery(searchQuery);
     const searchUrl = `https://www.google.com/maps/search/${formattedQuery}/`;
@@ -618,10 +764,9 @@ async function scrapeInitialData(searchQuery, limit = null, format = 'excel') {
         // Check if stop was requested
         if (isStopRequestedGlobal) {
             console.log('Stop requested. Terminating scrape.');
-            await browser.close();
             return [];
         }
-        
+
         // Wait for page to be interactive
         try {
             await page.evaluate(() => new Promise(resolve => setTimeout(resolve, 3000)));
@@ -669,17 +814,9 @@ async function scrapeInitialData(searchQuery, limit = null, format = 'excel') {
         }
         
         // Check for common error pages or blocking
-        const errorIndicators = await page.evaluate(() => {
-            const bodyText = document.body.innerText.toLowerCase();
-            return {
-                hasCaptcha: bodyText.includes('captcha') || bodyText.includes('verify'),
-                hasBlocked: bodyText.includes('blocked') || bodyText.includes('access denied'),
-                hasError: bodyText.includes('error') || bodyText.includes('not found'),
-                hasRateLimit: bodyText.includes('rate limit') || bodyText.includes('too many requests')
-            };
-        });
-        
-        if (errorIndicators.hasCaptcha || errorIndicators.hasBlocked || errorIndicators.hasRateLimit) {
+        const errorIndicators = await checkForBlocking(page);
+
+        if (errorIndicators.isBlocked) {
             console.log('Page appears to be blocked or showing error:', errorIndicators);
             throw new Error('Page is blocked or showing error: ' + JSON.stringify(errorIndicators));
         }
@@ -687,10 +824,9 @@ async function scrapeInitialData(searchQuery, limit = null, format = 'excel') {
         // Check if stop was requested
         if (isStopRequestedGlobal) {
             console.log('Stop requested. Terminating scrape.');
-            await browser.close();
             return [];
         }
-        
+
         // Wait for map to load with multiple fallback selectors
         let mapElement = null;
         const mapSelectors = [
@@ -726,7 +862,6 @@ async function scrapeInitialData(searchQuery, limit = null, format = 'excel') {
         // Check if stop was requested
         if (isStopRequestedGlobal) {
             console.log('Stop requested. Terminating scrape.');
-            await browser.close();
             return [];
         }
 
@@ -762,8 +897,6 @@ async function scrapeInitialData(searchQuery, limit = null, format = 'excel') {
         // Check if stop was requested after initial scrolling
         if (isStopRequestedGlobal) {
             console.log('Stop requested after initial scrolling. Returning partial results.');
-            isScrapingActive = false;
-            await browser.close();
             return results;
         }
 
@@ -774,12 +907,23 @@ async function scrapeInitialData(searchQuery, limit = null, format = 'excel') {
         
         if (!hasReachedLimit) {
             console.log('Starting map interaction to find more locations...');
-            
+
             try {
                 // Calculate remaining limit and ensure it's not negative
                 const remainingLimit = limit ? Math.max(0, limit - results.length) : null;
-                mapResults = await interactWithMap(page, mapElement, remainingLimit);
-                console.log(`Found ${mapResults.length} additional results from map interaction`);
+
+                // Prefer deterministic, zoom-aware tiled re-centering. Fall back
+                // to blind mouse-dragging only if we can't read the map center
+                // from the URL (e.g. Google didn't write @lat,lng for this query).
+                const startCenter = getMapCenter(page);
+                if (startCenter) {
+                    mapResults = await navigateTiles(page, searchQuery, startCenter, remainingLimit, tileRings);
+                    console.log(`Found ${mapResults.length} additional results from tiled navigation`);
+                } else {
+                    console.log('Map center unavailable from URL; falling back to mouse-drag interaction.');
+                    mapResults = await interactWithMap(page, mapElement, remainingLimit);
+                    console.log(`Found ${mapResults.length} additional results from map interaction`);
+                }
             } catch (error) {
                 console.log(`Map interaction failed: ${error.message}`);
                 console.log('Proceeding with initial results only');
@@ -801,19 +945,17 @@ async function scrapeInitialData(searchQuery, limit = null, format = 'excel') {
         
         console.log(`Total unique locations found: ${combinedResults.length} (requested limit: ${limit || 'none'})`);
 
-        await browser.close();
         return combinedResults;
     } catch (error) {
         console.error('Error during scraping:', error);
+        return [];
+    } finally {
         isScrapingActive = false;
         try {
             await browser.close();
         } catch (closeError) {
             console.error('Error closing browser:', closeError);
         }
-        return [];
-    } finally {
-        isScrapingActive = false;
     }
 }
 
@@ -989,14 +1131,14 @@ async function scrapeGoogleMapsData(page) {
     }
 
     async function processJsonFile(filename) {
-        const browser = await puppeteer.launch({ 
+        let browser;
+        try {
+        browser = await puppeteer.launch({
             headless: true,
             args: ['--start-maximized'],
             defaultViewport: null
         });
         const page = await browser.newPage();
-    
-        try {
             // Read and parse JSON file
             const jsonContent = JSON.parse(fs.readFileSync(filename, 'utf8'));
             const results = jsonContent.results;
@@ -1117,20 +1259,20 @@ async function scrapeGoogleMapsData(page) {
             console.error('Error processing JSON file:', error);
             throw error;
         } finally {
-            await browser.close();
+            if (browser) await browser.close();
         }
-    } 
-    
+    }
+
 
     async function processJsonFileWithContactInfo(filename) {
-        const browser = await puppeteer.launch({ 
+        let browser;
+        try {
+        browser = await puppeteer.launch({
             headless: true,
             args: ['--start-maximized'],
             defaultViewport: null
         });
         const page = await browser.newPage();
-    
-        try {
             // Read and parse JSON file
             const jsonContent = JSON.parse(fs.readFileSync(filename, 'utf8'));
             const results = jsonContent.results;
@@ -1248,9 +1390,9 @@ async function scrapeGoogleMapsData(page) {
         } catch (error) {
             console.error('Error processing JSON file:', error);
         } finally {
-            await browser.close();
+            if (browser) await browser.close();
         }
-    } 
+    }
 
 // --- New Code ---
 // Flags and tracking variables
@@ -1313,10 +1455,10 @@ const stopScraping = requestStopScraping;
 async function saveDataToJson(data, filePath = 'data/scraped_data.json') {
     const dir = path.dirname(filePath);
     try {
-        await fs.mkdir(dir, { recursive: true }); // Ensure directory exists
+        await fsp.mkdir(dir, { recursive: true }); // Ensure directory exists
         let existingData = [];
         try {
-            const fileContent = await fs.readFile(filePath, 'utf-8');
+            const fileContent = await fsp.readFile(filePath, 'utf-8');
             existingData = JSON.parse(fileContent);
             if (!Array.isArray(existingData)) {
                 console.warn("Existing data file is not an array. Overwriting.");
@@ -1334,7 +1476,7 @@ async function saveDataToJson(data, filePath = 'data/scraped_data.json') {
         const updatedData = existingData.concat(data);
 
         // Write updated data back to the file
-        await fs.writeFile(filePath, JSON.stringify(updatedData, null, 2), 'utf-8');
+        await fsp.writeFile(filePath, JSON.stringify(updatedData, null, 2), 'utf-8');
         console.log(`Data successfully saved/appended to ${filePath}`);
 
     } catch (error) {
@@ -1480,11 +1622,12 @@ module.exports = {
     scrapeGoogleMapsData,
     formatSearchQuery,
     interactWithMap,
+    navigateTiles,
+    getMapCenter,
+    buildTiledCenters,
+    checkForBlocking,
     scrapeCurrentView,
     continuousDrag,
-    scrapeGoogleMapsData,
-    extractContactInfo,
-    formatSearchQuery,
     scrapeAmazon,
     stopScraping,
     isScrapingActive: () => isScrapingActive,

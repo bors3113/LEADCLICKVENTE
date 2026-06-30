@@ -1,6 +1,7 @@
 const XLSX = require('xlsx');
 const fs = require('fs');
 const path = require('path');
+const { formatItemForExport } = require('./formatExportItem');
 
 // Ensure the results directory exists
 const resultsDir = path.join(process.cwd(), 'results');
@@ -8,38 +9,8 @@ if (!fs.existsSync(resultsDir)) {
   fs.mkdirSync(resultsDir, { recursive: true });
 }
 
-/**
- * Format data for export, processing nested contact information
- * @param {Array} data - Array of objects to export
- * @returns {Array} - Formatted data for export
- */
 function formatForExport(data) {
-  return data.map(item => {
-    // Create a new object with basic properties
-    const formattedItem = { ...item };
-    
-    // Handle contactInfo if it exists
-    if (item.contactInfo) {
-      // Add email information
-      formattedItem.emails = item.contactInfo.emails ? item.contactInfo.emails.join(', ') : '';
-      
-      // Add social media information
-      if (item.contactInfo.socialMedia) {
-        Object.entries(item.contactInfo.socialMedia).forEach(([platform, links]) => {
-          if (links && links.length > 0) {
-            formattedItem[`${platform}_links`] = links.join(', ');
-          } else {
-            formattedItem[`${platform}_links`] = '';
-          }
-        });
-      }
-      
-      // Remove the nested contactInfo object
-      delete formattedItem.contactInfo;
-    }
-    
-    return formattedItem;
-  });
+  return data.map(formatItemForExport);
 }
 
 /**

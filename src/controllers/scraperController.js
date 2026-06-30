@@ -1,3 +1,4 @@
+const config = require('../config');
 const { scrapeInitialData,
     processJsonFile,
     processJsonFileWithContactInfo} = require('../services/scraper');
@@ -9,17 +10,43 @@ const scraperService = require('../services/scraper');
 const scraperController = {
     // Handle single or multiple search queries
     async scrapeQuery(req, res) {
+        if (scraperService.isScrapingActive()) {
+            return res.status(409).json({ error: 'A scrape is already in progress. Stop it first via /api/stop-scrape.' });
+        }
+
         try {
-            const { query, queries, limit, format = 'excel', globalLimit = false } = req.body;
-            
+            const { query, queries, limit, format = 'excel', globalLimit = false, tileRings } = req.body;
+
             // Support both single query and multiple queries
             let searchQueries = [];
             if (queries && Array.isArray(queries) && queries.length > 0) {
-                searchQueries = queries;
+                searchQueries = queries
+                    .filter(q => typeof q === 'string')
+                    .map(q => q.trim())
+                    .filter(q => q.length > 0)
+                    .slice(0, config.scraper.maxQueriesPerRequest);
             } else if (query) {
-                searchQueries = [query];
-            } else {
+                const trimmed = typeof query === 'string' ? query.trim() : '';
+                if (trimmed) searchQueries = [trimmed];
+            }
+
+            if (searchQueries.length === 0) {
                 return res.status(400).json({ error: 'Search query or queries array is required' });
+            }
+
+            const parsedLimit = limit !== undefined ? parseInt(limit, 10) : undefined;
+            if (parsedLimit !== undefined && (isNaN(parsedLimit) || parsedLimit < 1)) {
+                return res.status(400).json({ error: 'limit must be a positive integer' });
+            }
+
+            // Optional tiling coverage radius (1 => 3x3 grid). Falls back to the
+            // configured default when not supplied.
+            let parsedTileRings = config.scraper.tileRings;
+            if (tileRings !== undefined) {
+                parsedTileRings = parseInt(tileRings, 10);
+                if (isNaN(parsedTileRings) || parsedTileRings < 0 || parsedTileRings > 5) {
+                    return res.status(400).json({ error: 'tileRings must be an integer between 0 and 5' });
+                }
             }
 
             const allResults = [];
@@ -31,19 +58,19 @@ const scraperController = {
                 console.log(`Processing query ${i + 1}/${searchQueries.length}: ${currentQuery}`);
                 
                 // Calculate remaining limit for this query
-                let remainingLimit = limit;
-                if (globalLimit && limit) {
-                    remainingLimit = limit - allResults.length;
-                    
+                let remainingLimit = parsedLimit;
+                if (globalLimit && parsedLimit) {
+                    remainingLimit = parsedLimit - allResults.length;
+
                     // Skip if we've already reached the global limit
                     if (remainingLimit <= 0) {
-                        console.log(`Global limit of ${limit} reached. Skipping remaining queries.`);
+                        console.log(`Global limit of ${parsedLimit} reached. Skipping remaining queries.`);
                         break;
                     }
                 }
                 
                 try {
-                    const results = await scrapeInitialData(currentQuery, remainingLimit, format);
+                    const results = await scrapeInitialData(currentQuery, remainingLimit, format, parsedTileRings);
                     
                     // Add query identifier to each result
                     const resultsWithQuery = results.map(result => ({
@@ -62,8 +89,8 @@ const scraperController = {
                     console.log(`Completed query ${i + 1}: ${results.length} results found`);
                     
                     // Check if we've reached the global limit after adding results
-                    if (globalLimit && limit && allResults.length >= limit) {
-                        console.log(`Global limit of ${limit} reached after query ${i + 1}. Stopping further queries.`);
+                    if (globalLimit && parsedLimit && allResults.length >= parsedLimit) {
+                        console.log(`Global limit of ${parsedLimit} reached after query ${i + 1}. Stopping further queries.`);
                         break;
                     }
                     
@@ -79,11 +106,11 @@ const scraperController = {
             }
             
             // Get the real-time export file path
-            const scraperService = require('../services/scraper');
             const realTimeExporter = scraperService.getRealTimeExporter();
-            
+
             let filePath, justFileName;
             if (realTimeExporter) {
+                realTimeExporter.finalize();
                 filePath = realTimeExporter.getFilePath();
                 justFileName = path.basename(filePath);
             } else {
@@ -107,7 +134,7 @@ const scraperController = {
                 totalResultsCount: allResults.length,
                 fileName: justFileName,
                 downloadUrl: `/api/download?file=${justFileName}`,
-                limit: limit || 'No limit'
+                limit: parsedLimit || 'No limit'
             });
         } catch (error) {
             console.error('Scraping error:', error);
@@ -125,9 +152,9 @@ const scraperController = {
 
             // Process the JSON file
             const processedData = await processJsonFile(filename);
-            
+
             // Generate output filename
-            const baseFilename = path.basename(filename, '.json');
+            const baseFilename = path.basename(filename, '.json').replace(/[^a-z0-9]/gi, '_').toLowerCase();
             const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
             const outputFilename = `${baseFilename}_processed_${timestamp}`;
             
@@ -164,9 +191,9 @@ const scraperController = {
 
             // Process the JSON file with contact info
             const processedData = await processJsonFileWithContactInfo(filename);
-            
+
             // Generate output filename
-            const baseFilename = path.basename(filename, '.json');
+            const baseFilename = path.basename(filename, '.json').replace(/[^a-z0-9]/gi, '_').toLowerCase();
             const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
             const outputFilename = `${baseFilename}_with_contacts_${timestamp}`;
             
