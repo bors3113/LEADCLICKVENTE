@@ -3,441 +3,913 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Google Maps Scraper</title>
+    <title>MapScrape — Google Maps Data Extractor</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;700&family=Syne:wght@400;600;700;800&display=swap" rel="stylesheet">
     <style>
+        :root {
+            --bg-void: #080a0e;
+            --bg-surface: #0d1117;
+            --bg-panel: #111720;
+            --bg-panel-alt: #161e2b;
+            --border: rgba(0,255,128,0.12);
+            --border-bright: rgba(0,255,128,0.35);
+            --accent: #00ff80;
+            --accent-dim: rgba(0,255,128,0.6);
+            --accent-glow: rgba(0,255,128,0.15);
+            --red: #ff3b5c;
+            --blue: #3b9eff;
+            --yellow: #ffd94a;
+            --text-primary: #e8f0fe;
+            --text-secondary: #6b7c99;
+            --text-mono: #a8c4a2;
+            --font-display: 'Syne', sans-serif;
+            --font-mono: 'JetBrains Mono', monospace;
+        }
+
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
         body {
-            font-family: Arial, sans-serif;
-            max-width: 800px;
+            font-family: var(--font-display);
+            background: var(--bg-void);
+            color: var(--text-primary);
+            min-height: 100vh;
+            overflow-x: hidden;
+        }
+
+        /* Noise overlay */
+        body::before {
+            content: '';
+            position: fixed;
+            inset: 0;
+            background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.04'/%3E%3C/svg%3E");
+            pointer-events: none;
+            z-index: 999;
+            opacity: 0.35;
+        }
+
+        /* Grid lines bg */
+        body::after {
+            content: '';
+            position: fixed;
+            inset: 0;
+            background-image:
+                linear-gradient(rgba(0,255,128,0.03) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(0,255,128,0.03) 1px, transparent 1px);
+            background-size: 40px 40px;
+            pointer-events: none;
+            z-index: 0;
+        }
+
+        .page-wrapper {
+            position: relative;
+            z-index: 1;
+            max-width: 860px;
             margin: 0 auto;
-            padding: 20px;
+            padding: 40px 24px 80px;
         }
-        .form-group {
-            margin-bottom: 15px;
+
+        /* ── HEADER ── */
+        .header {
+            display: flex;
+            align-items: center;
+            gap: 24px;
+            margin-bottom: 56px;
+            padding-bottom: 32px;
+            border-bottom: 1px solid var(--border);
+            animation: slideDown 0.6s ease both;
         }
-        label {
-            display: block;
-            margin-bottom: 5px;
+
+        .radar-wrap {
+            position: relative;
+            width: 64px;
+            height: 64px;
+            flex-shrink: 0;
         }
-        input[type="text"], input[type="number"] {
-            width: 100%;
-            padding: 8px;
-            border: 1px solid #ddd;
+
+        .radar-ring {
+            position: absolute;
+            inset: 0;
+            border-radius: 50%;
+            border: 1.5px solid var(--accent);
+            opacity: 0.4;
+        }
+        .radar-ring:nth-child(2) {
+            inset: 10px;
+            opacity: 0.25;
+            animation: pulse-ring 2s ease-in-out infinite 0.3s;
+        }
+        .radar-ring:nth-child(3) {
+            inset: 22px;
+            opacity: 0.15;
+        }
+
+        .radar-sweep {
+            position: absolute;
+            inset: 0;
+            border-radius: 50%;
+            background: conic-gradient(transparent 0deg, rgba(0,255,128,0.3) 60deg, transparent 60deg);
+            animation: sweep 3s linear infinite;
+        }
+
+        .radar-dot {
+            position: absolute;
+            width: 6px;
+            height: 6px;
+            background: var(--accent);
+            border-radius: 50%;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            box-shadow: 0 0 12px var(--accent), 0 0 24px var(--accent-glow);
+        }
+
+        @keyframes sweep {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
+        }
+
+        @keyframes pulse-ring {
+            0%, 100% { transform: scale(1); opacity: 0.25; }
+            50% { transform: scale(1.06); opacity: 0.4; }
+        }
+
+        .header-text { flex: 1; }
+
+        .header-text h1 {
+            font-size: 28px;
+            font-weight: 800;
+            letter-spacing: -0.5px;
+            color: var(--text-primary);
+            line-height: 1;
+        }
+
+        .header-text h1 span {
+            color: var(--accent);
+        }
+
+        .header-text p {
+            font-family: var(--font-mono);
+            font-size: 11px;
+            color: var(--text-secondary);
+            margin-top: 6px;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+        }
+
+        .version-badge {
+            font-family: var(--font-mono);
+            font-size: 10px;
+            font-weight: 700;
+            letter-spacing: 0.1em;
+            color: var(--accent);
+            background: var(--accent-glow);
+            border: 1px solid var(--border-bright);
+            padding: 4px 10px;
+            border-radius: 2px;
+        }
+
+        /* ── CARDS ── */
+        .card {
+            background: var(--bg-panel);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 24px;
+            margin-bottom: 16px;
+            transition: border-color 0.2s;
+        }
+
+        .card:focus-within {
+            border-color: var(--border-bright);
+        }
+
+        .card-label {
+            font-family: var(--font-mono);
+            font-size: 10px;
+            font-weight: 700;
+            letter-spacing: 0.15em;
+            text-transform: uppercase;
+            color: var(--accent);
+            margin-bottom: 14px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .card-label::before {
+            content: '';
+            width: 16px;
+            height: 1px;
+            background: var(--accent);
+            opacity: 0.6;
+        }
+
+        /* ── FORM CONTROLS ── */
+        .field-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 16px;
+        }
+
+        .field { display: flex; flex-direction: column; gap: 8px; }
+        .field.full { grid-column: 1 / -1; }
+
+        .field label {
+            font-family: var(--font-mono);
+            font-size: 11px;
+            font-weight: 500;
+            color: var(--text-secondary);
+            letter-spacing: 0.05em;
+        }
+
+        .field input,
+        .field select,
+        .field textarea {
+            background: var(--bg-void);
+            border: 1px solid rgba(255,255,255,0.08);
             border-radius: 4px;
-        }
-        textarea {
+            color: var(--text-primary);
+            font-family: var(--font-mono);
+            font-size: 13px;
+            padding: 10px 14px;
             width: 100%;
-            padding: 8px;
-            border: 1px solid #ddd;
-            border-radius: 4px;
-            font-family: Arial, sans-serif;
+            transition: border-color 0.2s, box-shadow 0.2s;
+            appearance: none;
+            -webkit-appearance: none;
+        }
+
+        .field input::placeholder,
+        .field textarea::placeholder {
+            color: rgba(255,255,255,0.2);
+        }
+
+        .field input:focus,
+        .field select:focus,
+        .field textarea:focus {
+            outline: none;
+            border-color: var(--accent);
+            box-shadow: 0 0 0 3px rgba(0,255,128,0.08);
+        }
+
+        .field textarea {
             resize: vertical;
+            min-height: 100px;
         }
-        select {
-            width: 100%;
-            padding: 8px;
-            border: 1px solid #ddd;
-            border-radius: 4px;
-        }
-        button {
-            background-color: #4CAF50;
-            color: white;
-            padding: 10px 20px;
-            border: none;
-            border-radius: 4px;
+
+        .field select {
+            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%2300ff80' d='M6 8L1 3h10z'/%3E%3C/svg%3E");
+            background-repeat: no-repeat;
+            background-position: right 12px center;
+            padding-right: 36px;
             cursor: pointer;
         }
-        button:hover {
-            background-color: #45a049;
-        }
-        #status {
-            margin-top: 20px;
-            padding: 10px;
-            border-radius: 4px;
-            white-space: pre-line;
-        }
-        .success {
-            background-color: #dff0d8;
-            color: #3c763d;
-        }
-        .error {
-            background-color: #f2dede;
-            color: #a94442;
-        }
-        .download-link {
-            display: inline-block;
-            margin-top: 10px;
-            padding: 8px 16px;
-            background-color: #337ab7;
-            color: white;
-            text-decoration: none;
-            border-radius: 4px;
-        }
-        .download-link:hover {
-            background-color: #286090;
-        }
-        .progress-container {
-            margin-top: 15px;
-            display: none;
-            padding: 10px;
-            background-color: #f8f9fa;
-            border-radius: 4px;
-            border: 1px solid #ddd;
-        }
-        .progress-bar {
-            display: none; /* Hide the progress bar */
-        }
-        .progress {
-            display: none; /* Hide the progress */
-        }
-        .stats {
+
+        /* ── MODE TOGGLE ── */
+        .mode-toggle {
             display: flex;
-            justify-content: space-between;
-            font-size: 16px;
-            color: #333;
+            background: var(--bg-void);
+            border: 1px solid rgba(255,255,255,0.08);
+            border-radius: 4px;
+            overflow: hidden;
+            gap: 0;
+        }
+
+        .mode-btn {
+            flex: 1;
+            padding: 9px 16px;
+            font-family: var(--font-mono);
+            font-size: 12px;
             font-weight: 500;
+            letter-spacing: 0.05em;
+            border: none;
+            background: transparent;
+            color: var(--text-secondary);
+            cursor: pointer;
+            transition: all 0.2s;
+            position: relative;
+        }
+
+        .mode-btn.active {
+            color: var(--accent);
+            background: rgba(0,255,128,0.08);
+        }
+
+        .mode-btn + .mode-btn {
+            border-left: 1px solid rgba(255,255,255,0.08);
+        }
+
+        /* ── ACTION BUTTONS ── */
+        .actions {
+            display: grid;
+            grid-template-columns: 1fr auto auto;
+            gap: 12px;
+            margin-top: 24px;
+        }
+
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            font-family: var(--font-mono);
+            font-size: 12px;
+            font-weight: 700;
+            letter-spacing: 0.12em;
+            text-transform: uppercase;
+            padding: 12px 20px;
+            border: 1px solid transparent;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: all 0.2s;
+            white-space: nowrap;
+        }
+
+        .btn-primary {
+            background: var(--accent);
+            color: var(--bg-void);
+            border-color: var(--accent);
+        }
+
+        .btn-primary:hover:not(:disabled) {
+            background: transparent;
+            color: var(--accent);
+            box-shadow: 0 0 20px var(--accent-glow);
+        }
+
+        .btn-primary:disabled {
+            opacity: 0.35;
+            cursor: not-allowed;
+        }
+
+        .btn-stop {
+            background: transparent;
+            color: var(--red);
+            border-color: rgba(255,59,92,0.4);
+        }
+
+        .btn-stop:hover:not(:disabled) {
+            background: rgba(255,59,92,0.1);
+            border-color: var(--red);
+        }
+
+        .btn-stop:disabled {
+            opacity: 0.25;
+            cursor: not-allowed;
+        }
+
+        .btn-export {
+            background: transparent;
+            color: var(--blue);
+            border-color: rgba(59,158,255,0.4);
+        }
+
+        .btn-export:hover:not(:disabled) {
+            background: rgba(59,158,255,0.1);
+            border-color: var(--blue);
+        }
+
+        .btn-export:disabled {
+            opacity: 0.25;
+            cursor: not-allowed;
+        }
+
+        /* ── STATUS PANEL ── */
+        .status-panel {
+            margin-top: 16px;
+            padding: 16px 20px;
+            border-radius: 4px;
+            font-family: var(--font-mono);
+            font-size: 12px;
+            line-height: 1.7;
+            display: none;
+            border: 1px solid transparent;
+        }
+
+        .status-panel.visible { display: block; }
+
+        .status-panel.success {
+            background: rgba(0,255,128,0.06);
+            border-color: rgba(0,255,128,0.2);
+            color: var(--text-mono);
+        }
+
+        .status-panel.error {
+            background: rgba(255,59,92,0.06);
+            border-color: rgba(255,59,92,0.2);
+            color: #ff8099;
+        }
+
+        .status-panel.info {
+            background: rgba(59,158,255,0.06);
+            border-color: rgba(59,158,255,0.2);
+            color: #7bbeff;
+        }
+
+        /* ── METRICS ── */
+        .metrics-card {
+            background: var(--bg-panel);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 20px 24px;
+            margin-top: 16px;
+            display: none;
+        }
+
+        .metrics-card.visible { display: block; }
+
+        .metrics-header {
+            font-family: var(--font-mono);
+            font-size: 10px;
+            font-weight: 700;
+            letter-spacing: 0.15em;
+            text-transform: uppercase;
+            color: var(--text-secondary);
+            margin-bottom: 16px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .live-dot {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: var(--accent);
+            box-shadow: 0 0 8px var(--accent);
+            animation: blink 1.2s ease-in-out infinite;
+        }
+
+        @keyframes blink {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.2; }
+        }
+
+        .metrics-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 16px;
+        }
+
+        .metric {
+            background: var(--bg-void);
+            border: 1px solid rgba(255,255,255,0.06);
+            border-radius: 4px;
+            padding: 14px 16px;
+        }
+
+        .metric-value {
+            font-size: 28px;
+            font-weight: 800;
+            color: var(--accent);
+            font-family: var(--font-mono);
+            line-height: 1;
+            letter-spacing: -0.02em;
+        }
+
+        .metric-label {
+            font-family: var(--font-mono);
+            font-size: 10px;
+            color: var(--text-secondary);
+            margin-top: 6px;
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+        }
+
+        /* ── DOWNLOAD ── */
+        .download-zone {
+            margin-top: 16px;
+        }
+
+        .download-btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 10px;
+            padding: 12px 20px;
+            background: rgba(59,158,255,0.1);
+            border: 1px solid rgba(59,158,255,0.3);
+            border-radius: 4px;
+            color: var(--blue);
+            text-decoration: none;
+            font-family: var(--font-mono);
+            font-size: 12px;
+            font-weight: 700;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            transition: all 0.2s;
+        }
+
+        .download-btn:hover {
+            background: rgba(59,158,255,0.18);
+            border-color: var(--blue);
+        }
+
+        .download-note {
+            font-family: var(--font-mono);
+            font-size: 11px;
+            color: var(--text-secondary);
+            margin-top: 10px;
+            line-height: 1.6;
+        }
+
+        /* ── ANIMATIONS ── */
+        @keyframes slideDown {
+            from { opacity: 0; transform: translateY(-16px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .card { animation: fadeUp 0.5s ease both; }
+        .card:nth-child(2) { animation-delay: 0.1s; }
+        .card:nth-child(3) { animation-delay: 0.18s; }
+
+        @keyframes fadeUp {
+            from { opacity: 0; transform: translateY(20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        /* Scanning animation during scraping */
+        .scanning .radar-sweep {
+            animation-duration: 1.2s;
+        }
+
+        .scanning .radar-dot {
+            animation: ping 1s ease-in-out infinite;
+        }
+
+        @keyframes ping {
+            0%, 100% { box-shadow: 0 0 12px var(--accent), 0 0 24px var(--accent-glow); }
+            50% { box-shadow: 0 0 20px var(--accent), 0 0 48px rgba(0,255,128,0.4); }
+        }
+
+        /* ── FOOTER ── */
+        .footer {
+            margin-top: 48px;
+            padding-top: 24px;
+            border-top: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .footer p {
+            font-family: var(--font-mono);
+            font-size: 10px;
+            color: rgba(255,255,255,0.15);
+            letter-spacing: 0.08em;
+        }
+
+        .status-led {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-family: var(--font-mono);
+            font-size: 10px;
+            color: var(--text-secondary);
+        }
+
+        .status-led-dot {
+            width: 5px;
+            height: 5px;
+            border-radius: 50%;
+            background: var(--accent);
+        }
+
+        @media (max-width: 600px) {
+            .field-row { grid-template-columns: 1fr; }
+            .actions { grid-template-columns: 1fr; }
+            .metrics-row { grid-template-columns: 1fr; }
+            .header { gap: 16px; }
+            .header-text h1 { font-size: 22px; }
         }
     </style>
 </head>
 <body>
-    <div class="container mt-5">
-        <h1 class="text-center mb-4">Google Maps Scraper</h1>
-        
-        <div class="form-group">
-            <label for="searchMode">Search Mode:</label>
-            <select id="searchMode" onchange="toggleSearchMode()">
-                <option value="single">Single Location</option>
-                <option value="multiple">Multiple Locations</option>
-            </select>
+<div class="page-wrapper">
+
+    <!-- HEADER -->
+    <header class="header">
+        <div class="radar-wrap" id="radarWrap">
+            <div class="radar-ring"></div>
+            <div class="radar-ring"></div>
+            <div class="radar-ring"></div>
+            <div class="radar-sweep"></div>
+            <div class="radar-dot"></div>
         </div>
-        
-        <div id="singleSearchGroup" class="form-group">
-            <label for="search">Search Query:</label>
-            <input type="text" id="search" placeholder="e.g., restaurants in Paris">
+        <div class="header-text">
+            <h1>Map<span>Scrape</span></h1>
+            <p>Google Maps Data Extractor // Business Intelligence</p>
         </div>
-        
-        <div id="multipleSearchGroup" class="form-group" style="display: none;">
-            <label for="multipleSearch">Multiple Search Queries (one per line):</label>
-            <textarea id="multipleSearch" rows="5" placeholder="restaurants in Paris&#10;restaurants in London&#10;restaurants in Berlin"></textarea>
-        </div>
-        
-        <div class="form-group">
-            <label for="limit">Result Limit (optional):</label>
-            <input type="number" id="limit" placeholder="e.g., 20 (leave empty for no limit)" min="1">
-        </div>
-        
-        <div class="form-group">
-            <label for="globalLimit">Limit Type:</label>
-            <select id="globalLimit">
-                <option value="false">Per Query (each query gets its own limit)</option>
-                <option value="true">Global (limit applies across all queries combined)</option>
-            </select>
-        </div>
-        
-        <div class="form-group">
-            <label for="format">Output Format:</label>
-            <select id="format">
-                <option value="excel">Excel (.xlsx)</option>
-                <option value="csv">CSV</option>
-            </select>
-        </div>
-        <div class="row mt-3">
-            <div class="col-md-12 text-center">
-                <button id="scrapeBtn" class="btn btn-primary">Start Scraping</button>
-                <button id="stopScrapeBtn" class="btn btn-danger ml-2" disabled>Stop Scraping</button>
-                <button id="exportBtn" class="btn btn-success ml-2" disabled>Export to Excel</button>
+        <div class="version-badge">v2.0</div>
+    </header>
+
+    <!-- SEARCH MODE CARD -->
+    <div class="card">
+        <div class="card-label">Target Configuration</div>
+
+        <div class="field" style="margin-bottom:16px;">
+            <label>Search Mode</label>
+            <div class="mode-toggle">
+                <button class="mode-btn active" id="modeSingle" onclick="setMode('single')">Single Location</button>
+                <button class="mode-btn" id="modeMultiple" onclick="setMode('multiple')">Multiple Locations</button>
             </div>
         </div>
-        <div id="status"></div>
-        
-        <!-- New Progress Section -->
-        <div id="progress-container" class="progress-container">
-            <h3>Scraping Status</h3>
-            <!-- Keep the progress div but keep it hidden -->
-            <div class="progress-bar">
-                <div id="progress" class="progress" style="width: 0%">0%</div>
-            </div>
-            <div class="stats">
-                <span id="businesses-count">Elements scraped: 0</span>
-                <span id="elapsed-time">Time: 0s</span>
-            </div>
+
+        <div id="singleSearchGroup" class="field">
+            <label>Search Query</label>
+            <input type="text" id="search" placeholder="e.g., restaurants in Paris, France">
         </div>
-        
-        <div id="download-container"></div>
+
+        <div id="multipleSearchGroup" class="field" style="display:none;">
+            <label>Search Queries — one per line</label>
+            <textarea id="multipleSearch" placeholder="restaurants in Paris&#10;hotels in Berlin&#10;cafes in London"></textarea>
+        </div>
     </div>
 
-    <script>
-        const scrapeBtn = document.getElementById('scrapeBtn');
-        const stopScrapeBtn = document.getElementById('stopScrapeBtn');
-        const exportBtn = document.getElementById('exportBtn');
-        const progressContainer = document.getElementById('progress-container');
-        const progressBar = document.getElementById('progress');
-        const businessesCount = document.getElementById('businesses-count');
-        const elapsedTime = document.getElementById('elapsed-time');
-        
-        let statusPollInterval = null;
-        
-        // Function to toggle between single and multiple search modes
-        function toggleSearchMode() {
-            const searchMode = document.getElementById('searchMode').value;
-            const singleSearchGroup = document.getElementById('singleSearchGroup');
-            const multipleSearchGroup = document.getElementById('multipleSearchGroup');
-            
-            if (searchMode === 'single') {
-                singleSearchGroup.style.display = 'block';
-                multipleSearchGroup.style.display = 'none';
-            } else {
-                singleSearchGroup.style.display = 'none';
-                multipleSearchGroup.style.display = 'block';
-            }
+    <!-- OPTIONS CARD -->
+    <div class="card">
+        <div class="card-label">Extraction Parameters</div>
+        <div class="field-row">
+            <div class="field">
+                <label>Result Limit</label>
+                <input type="number" id="limit" placeholder="Unlimited (leave empty)" min="1">
+            </div>
+            <div class="field">
+                <label>Limit Type</label>
+                <select id="globalLimit">
+                    <option value="false">Per Query</option>
+                    <option value="true">Global (all queries combined)</option>
+                </select>
+            </div>
+            <div class="field">
+                <label>Output Format</label>
+                <select id="format">
+                    <option value="excel">Excel (.xlsx)</option>
+                    <option value="csv">CSV (.csv)</option>
+                </select>
+            </div>
+        </div>
+    </div>
+
+    <!-- ACTIONS -->
+    <div class="actions">
+        <button id="scrapeBtn" class="btn btn-primary" onclick="startScraping()">
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><circle cx="7" cy="7" r="5.5" stroke="currentColor" stroke-width="1.5"/><path d="M7 4v3l2 1" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+            Start Scraping
+        </button>
+        <button id="stopScrapeBtn" class="btn btn-stop" disabled>
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><rect x="3" y="3" width="8" height="8" rx="1" stroke="currentColor" stroke-width="1.5"/></svg>
+            Stop
+        </button>
+        <button id="exportBtn" class="btn btn-export" disabled>
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 2v7M4 6l3 3 3-3M2 10v2h10v-2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            Export
+        </button>
+    </div>
+
+    <!-- STATUS -->
+    <div id="statusPanel" class="status-panel"></div>
+
+    <!-- METRICS -->
+    <div id="metricsCard" class="metrics-card">
+        <div class="metrics-header">
+            <div class="live-dot" id="liveDot"></div>
+            Live Extraction Metrics
+        </div>
+        <div class="metrics-row">
+            <div class="metric">
+                <div class="metric-value" id="businessesCount">0</div>
+                <div class="metric-label">Records Extracted</div>
+            </div>
+            <div class="metric">
+                <div class="metric-value" id="elapsedTime">0s</div>
+                <div class="metric-label">Elapsed Time</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- DOWNLOAD -->
+    <div id="downloadContainer" class="download-zone"></div>
+
+    <!-- FOOTER -->
+    <footer class="footer">
+        <p>MAPSCRAPE // DATA EXTRACTION TOOL // 2025</p>
+        <div class="status-led">
+            <div class="status-led-dot"></div>
+            System Online
+        </div>
+    </footer>
+
+</div>
+
+<script>
+    const scrapeBtn = document.getElementById('scrapeBtn');
+    const stopScrapeBtn = document.getElementById('stopScrapeBtn');
+    const exportBtn = document.getElementById('exportBtn');
+    const metricsCard = document.getElementById('metricsCard');
+    const businessesCount = document.getElementById('businessesCount');
+    const elapsedTime = document.getElementById('elapsedTime');
+    const statusPanel = document.getElementById('statusPanel');
+    const radarWrap = document.getElementById('radarWrap');
+
+    let statusPollInterval = null;
+
+    function setMode(mode) {
+        const single = document.getElementById('singleSearchGroup');
+        const multiple = document.getElementById('multipleSearchGroup');
+        const btnSingle = document.getElementById('modeSingle');
+        const btnMultiple = document.getElementById('modeMultiple');
+
+        if (mode === 'single') {
+            single.style.display = 'flex';
+            multiple.style.display = 'none';
+            btnSingle.classList.add('active');
+            btnMultiple.classList.remove('active');
+        } else {
+            single.style.display = 'none';
+            multiple.style.display = 'flex';
+            btnSingle.classList.remove('active');
+            btnMultiple.classList.add('active');
         }
-        
-        // Function to update the progress display
-        async function updateScrapingProgress() {
-            try {
-                const response = await fetch('http://localhost:3008/api/scrape-status');
-                
-                if (!response.ok) {
-                    console.error('Failed to fetch scraping status');
-                    return;
-                }
-                
-                const data = await response.json();
-                
-                // If scraping is active, show the progress container
-                if (data.isActive) {
-                    progressContainer.style.display = 'block';
-                    
-                    // Update stats - simplified to just show elements scraped count
-                    businessesCount.textContent = `Elements scraped: ${data.itemsScraped}`;
-                    elapsedTime.textContent = `Time: ${data.elapsedTimeSeconds}s`;
-                } else if (data.itemsScraped > 0) {
-                    // If scraping is complete but we have data, show final status
-                    progressContainer.style.display = 'block';
-                    businessesCount.textContent = `Elements scraped: ${data.itemsScraped}`;
-                    elapsedTime.textContent = `Time: ${data.elapsedTimeSeconds}s`;
-                    
-                    // Clear the interval if scraping is done
-                    if (statusPollInterval) {
-                        clearInterval(statusPollInterval);
-                        statusPollInterval = null;
-                    }
-                } else {
-                    // No active scraping and no data
-                    progressContainer.style.display = 'none';
-                }
-            } catch (error) {
-                console.error('Error updating progress:', error);
-            }
+    }
+
+    function getMode() {
+        return document.getElementById('modeSingle').classList.contains('active') ? 'single' : 'multiple';
+    }
+
+    function showStatus(message, type = 'info') {
+        statusPanel.className = `status-panel visible ${type}`;
+        statusPanel.innerHTML = message;
+    }
+
+    function hideStatus() {
+        statusPanel.className = 'status-panel';
+    }
+
+    function setScanning(active) {
+        if (active) {
+            radarWrap.classList.add('scanning');
+        } else {
+            radarWrap.classList.remove('scanning');
         }
-        
-        // Add event listener for the scrape button
-        scrapeBtn.addEventListener('click', startScraping);
-        
-        async function startScraping() {
-            const searchMode = document.getElementById('searchMode').value;
-            const searchQuery = document.getElementById('search').value;
-            const multipleSearch = document.getElementById('multipleSearch').value;
-            const limit = document.getElementById('limit').value;
-            const format = document.getElementById('format').value;
-            const statusDiv = document.getElementById('status');
-            const downloadContainer = document.getElementById('download-container');
-            
-            // Validate input based on search mode
-            if (searchMode === 'single') {
-                if (!searchQuery.trim()) {
-                    statusDiv.className = 'error';
-                    statusDiv.textContent = 'Please enter a search query';
-                    return;
-                }
-            } else {
-                if (!multipleSearch.trim()) {
-                    statusDiv.className = 'error';
-                    statusDiv.textContent = 'Please enter at least one search query';
-                    return;
-                }
+    }
+
+    async function updateScrapingProgress() {
+        try {
+            const response = await fetch('/api/scrape-status');
+            if (!response.ok) return;
+            const data = await response.json();
+
+            if (data.isActive || data.itemsScraped > 0) {
+                metricsCard.classList.add('visible');
+                businessesCount.textContent = data.itemsScraped;
+                elapsedTime.textContent = `${data.elapsedTimeSeconds}s`;
             }
 
-            try {
-                statusDiv.className = '';
-                statusDiv.textContent = 'Scraping in progress...';
-                downloadContainer.innerHTML = '';
-                
-                // Reset progress display - fix the null reference error
-                if (progressBar) {
-                    progressBar.style.width = '0%';
-                    progressBar.textContent = '0%';
-                }
-                businessesCount.textContent = 'Elements scraped: 0';
-                elapsedTime.textContent = 'Time: 0s';
-                progressContainer.style.display = 'block';
-                
-                // Start polling for status updates
-                if (statusPollInterval) {
-                    clearInterval(statusPollInterval);
-                }
-                statusPollInterval = setInterval(updateScrapingProgress, 2000);
-                
-                // Disable scrape button and enable stop button during scraping
-                scrapeBtn.disabled = true;
-                stopScrapeBtn.disabled = false;
-                
-                // Prepare request body based on search mode
-                let requestBody = { format };
-                
-                if (searchMode === 'single') {
-                    requestBody.query = searchQuery;
-                } else {
-                    // Parse multiple queries (split by newlines and filter empty lines)
-                    const queries = multipleSearch.split('\n')
-                        .map(q => q.trim())
-                        .filter(q => q.length > 0);
-                    requestBody.queries = queries;
-                }
-                
-                // Add limit if specified
-                if (limit && limit.trim() !== '') {
-                    requestBody.limit = parseInt(limit);
-                }
-                
-                // Add global limit setting
-                const globalLimit = document.getElementById('globalLimit').value;
-                requestBody.globalLimit = globalLimit === 'true';
-                
-                const response = await fetch('http://localhost:3008/api/scrape', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify(requestBody)
-                });
+            if (!data.isActive && statusPollInterval) {
+                clearInterval(statusPollInterval);
+                statusPollInterval = null;
+                setScanning(false);
+            }
+        } catch (e) {
+            console.error('Progress poll error:', e);
+        }
+    }
 
-                const data = await response.json();
+    async function startScraping() {
+        const mode = getMode();
+        const searchQuery = document.getElementById('search').value;
+        const multipleSearch = document.getElementById('multipleSearch').value;
+        const limit = document.getElementById('limit').value;
+        const format = document.getElementById('format').value;
+        const downloadContainer = document.getElementById('downloadContainer');
 
-                if (response.ok) {
-                    statusDiv.className = 'success';
-                    
-                    // Create detailed success message
-                    let successMessage = `Scraping completed successfully!`;
-                    
-                    if (data.queryResults && data.queryResults.length > 0) {
-                        successMessage += `\n\nQuery Results:`;
-                        data.queryResults.forEach((result, index) => {
-                            if (result.success) {
-                                successMessage += `\n• ${result.query}: ${result.resultsCount} results`;
-                            } else {
-                                successMessage += `\n• ${result.query}: Failed - ${result.error}`;
-                            }
-                        });
-                        successMessage += `\n\nTotal Results: ${data.totalResultsCount}`;
-                    } else {
-                        successMessage += ` Found ${data.resultsCount || data.totalResultsCount} results.`;
-                    }
-                    
-                    if (data.limit && data.limit !== 'No limit') {
-                        successMessage += `\nLimit applied: ${data.limit} results per query.`;
-                    }
-                    
-                    successMessage += `\n\n📁 File is being saved in real-time as data is scraped!`;
-                    
-                    statusDiv.textContent = successMessage;
-                    
-                    // Add download link
-                    if (data.downloadUrl) {
-                        const downloadLink = document.createElement('a');
-                        downloadLink.href = data.downloadUrl;
-                        downloadLink.className = 'download-link';
-                        downloadLink.textContent = `📥 Download ${format === 'csv' ? 'CSV' : 'Excel'} File (Real-time)`;
-                        downloadLink.target = '_blank';
-                        downloadContainer.appendChild(downloadLink);
-                        
-                        // Add note about real-time saving
-                        const note = document.createElement('p');
-                        note.style.marginTop = '10px';
-                        note.style.fontSize = '14px';
-                        note.style.color = '#666';
-                        note.textContent = '💡 The file is updated in real-time as data is scraped. You can download it anytime during or after scraping.';
-                        downloadContainer.appendChild(note);
-                    }
-                    
-                    // Stop polling for updates
-                    if (statusPollInterval) {
-                        clearInterval(statusPollInterval);
-                        statusPollInterval = null;
-                    }
+        if (mode === 'single' && !searchQuery.trim()) {
+            showStatus('⚠ Please enter a search query.', 'error');
+            return;
+        }
+        if (mode === 'multiple' && !multipleSearch.trim()) {
+            showStatus('⚠ Please enter at least one search query.', 'error');
+            return;
+        }
+
+        try {
+            showStatus('Initializing scraper... connecting to Google Maps', 'info');
+            downloadContainer.innerHTML = '';
+            metricsCard.classList.add('visible');
+            businessesCount.textContent = '0';
+            elapsedTime.textContent = '0s';
+
+            scrapeBtn.disabled = true;
+            stopScrapeBtn.disabled = false;
+            setScanning(true);
+
+            if (statusPollInterval) clearInterval(statusPollInterval);
+            statusPollInterval = setInterval(updateScrapingProgress, 1500);
+
+            let requestBody = { format };
+
+            if (mode === 'single') {
+                requestBody.query = searchQuery;
+            } else {
+                requestBody.queries = multipleSearch.split('\n').map(q => q.trim()).filter(q => q.length > 0);
+            }
+
+            if (limit && limit.trim() !== '') requestBody.limit = parseInt(limit);
+
+            const globalLimit = document.getElementById('globalLimit').value;
+            requestBody.globalLimit = globalLimit === 'true';
+
+            const response = await fetch('/api/scrape', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(requestBody)
+            });
+
+            const data = await response.json();
+
+            if (response.ok) {
+                let msg = `<strong style="color:var(--accent)">✓ Extraction complete</strong><br><br>`;
+
+                if (data.queryResults && data.queryResults.length > 0) {
+                    data.queryResults.forEach(result => {
+                        if (result.success) {
+                            msg += `<span style="color:var(--accent-dim)">→</span> ${result.query}: <strong>${result.resultsCount}</strong> records<br>`;
+                        } else {
+                            msg += `<span style="color:var(--red)">✗</span> ${result.query}: ${result.error}<br>`;
+                        }
+                    });
+                    msg += `<br>Total: <strong style="color:var(--accent)">${data.totalResultsCount}</strong> records extracted`;
                 } else {
-                    throw new Error(data.error || 'Scraping failed');
+                    msg += `Extracted <strong style="color:var(--accent)">${data.resultsCount || data.totalResultsCount}</strong> records`;
                 }
-            } catch (error) {
-                statusDiv.className = 'error';
-                statusDiv.textContent = `Error: ${error.message}`;
-                
-                // Stop polling for updates on error
-                if (statusPollInterval) {
-                    clearInterval(statusPollInterval);
-                    statusPollInterval = null;
+
+                if (data.limit && data.limit !== 'No limit') {
+                    msg += `<br>Limit: ${data.limit} per query`;
                 }
-            } finally {
-                // Re-enable scrape button and disable stop button when done
+
+                showStatus(msg, 'success');
+
+                if (data.downloadUrl) {
+                    downloadContainer.innerHTML = `
+                        <a href="${data.downloadUrl}" class="download-btn" target="_blank">
+                            <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 2v7M4 6l3 3 3-3M2 10v2h10v-2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                            Download ${format === 'csv' ? 'CSV' : 'Excel'} File
+                        </a>
+                        <p class="download-note">File is updated in real-time — download at any point during or after extraction.</p>
+                    `;
+                }
+
+                if (statusPollInterval) { clearInterval(statusPollInterval); statusPollInterval = null; }
+                setScanning(false);
+                // Set final counts directly from response — do NOT call updateScrapingProgress()
+                // which would overwrite with stale server-side numbers
+                const finalCount = data.totalResultsCount ?? data.resultsCount ?? 0;
+                businessesCount.textContent = finalCount;
+                metricsCard.classList.add('visible');
+
+            } else {
+                throw new Error(data.error || 'Scraping failed');
+            }
+        } catch (error) {
+            showStatus(`<strong style="color:var(--red)">✗ Error:</strong> ${error.message}`, 'error');
+            if (statusPollInterval) { clearInterval(statusPollInterval); statusPollInterval = null; }
+            setScanning(false);
+        } finally {
+            scrapeBtn.disabled = false;
+            stopScrapeBtn.disabled = true;
+        }
+    }
+
+    stopScrapeBtn.addEventListener('click', async () => {
+        try {
+            showStatus('Sending stop signal...', 'info');
+            const response = await fetch('/api/stop-scrape', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' }
+            });
+            const data = await response.json();
+
+            if (response.ok) {
+                showStatus(`<strong style="color:var(--accent)">✓ Stopped</strong> — ${data.message || 'Scraping halted. Collected data has been saved.'}`, 'success');
                 scrapeBtn.disabled = false;
                 stopScrapeBtn.disabled = true;
+                setScanning(false);
+                if (statusPollInterval) { clearInterval(statusPollInterval); statusPollInterval = null; }
+                // One final poll to get accurate stopped counts
+                await updateScrapingProgress();
+            } else {
+                showStatus(`Failed to stop: ${data.message || 'Unknown error'}`, 'error');
             }
+        } catch (error) {
+            showStatus(`Error: ${error.message}`, 'error');
+            scrapeBtn.disabled = false;
+            stopScrapeBtn.disabled = true;
+            setScanning(false);
         }
+    });
 
-        // Add event listener for the stop button
-        stopScrapeBtn.addEventListener('click', async () => {
-            try {
-                const statusDiv = document.getElementById('status');
-                statusDiv.className = '';
-                statusDiv.textContent = 'Requesting scraping to stop...';
-                
-                const response = await fetch('http://localhost:3008/api/stop-scrape', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    }
-                });
-                
-                // Log the raw response for debugging
-                console.log('Stop scrape response status:', response.status);
-                
-                const data = await response.json();
-                console.log('Stop scrape response data:', data);
-                
-                // Accept any successful response, even if success flag isn't explicitly true
-                if (response.ok) {
-                    statusDiv.className = 'success';
-                    statusDiv.textContent = data.message || 'Scraping process stopped. The collected data has been saved.';
-                    
-                    // Re-enable scrape button and disable stop button
-                    scrapeBtn.disabled = false;
-                    stopScrapeBtn.disabled = true;
-                    
-                    // Do a final progress update
-                    await updateScrapingProgress();
-                    
-                    // Stop polling for updates
-                    if (statusPollInterval) {
-                        clearInterval(statusPollInterval);
-                        statusPollInterval = null;
-                    }
-                } else {
-                    statusDiv.className = 'error';
-                    statusDiv.textContent = `Failed to stop scraping: ${data.message || 'Unknown error'}`;
-                }
-            } catch (error) {
-                console.error('Error stopping scraping:', error);
-                const statusDiv = document.getElementById('status');
-                statusDiv.className = 'error';
-                statusDiv.textContent = `Error: ${error.message}`;
-                
-                // Re-enable scrape button in case of error
-                scrapeBtn.disabled = false;
-                stopScrapeBtn.disabled = true;
-            }
-        });
-        
-        // Check for any active scraping on page load
-        updateScrapingProgress();
-    </script>
+    // Initial status check
+    updateScrapingProgress();
+</script>
 </body>
-</html> 
+</html>
