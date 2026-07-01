@@ -127,6 +127,11 @@ const scraperController = {
                 justFileName = path.basename(filePath);
             }
             
+            // Fix #2: expose whether the area was exhausted before the limit was reached
+            const areaExhausted = parsedLimit
+                ? allResults.length < parsedLimit
+                : false;
+
             res.json({
                 success: true,
                 queries: searchQueries,
@@ -134,7 +139,9 @@ const scraperController = {
                 totalResultsCount: allResults.length,
                 fileName: justFileName,
                 downloadUrl: `/api/download?file=${justFileName}`,
-                limit: parsedLimit || 'No limit'
+                limit: parsedLimit || 'No limit',
+                requestedLimit: parsedLimit || null,
+                areaExhausted
             });
         } catch (error) {
             console.error('Scraping error:', error);

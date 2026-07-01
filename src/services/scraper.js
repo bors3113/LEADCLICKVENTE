@@ -476,6 +476,9 @@ function formatSearchQuery(query) {
     }
 
     console.log(`Returning ${results.length} unique results (requested limit: ${limit || 'none'})`);
+    // Fix #3: expose whether the feed was fully exhausted so callers (navigateTiles)
+    // can abort remaining tiles instead of navigating them needlessly.
+    results._feedExhausted = !limitReached && !isStopRequestedGlobal;
     return results;
 }
 
@@ -698,6 +701,13 @@ async function navigateTiles(page, query, startCenter, limit = null, ringCount =
             break;
         }
 
+        // Fix #3: if this tile's feed was fully exhausted (end-of-list reached) and
+        // yielded nothing new, the area is sparse — no point visiting further tiles.
+        if (results._feedExhausted && results.length === 0 && allResults.size > 0) {
+            console.log('Feed exhausted with no new results on this tile. Aborting remaining tiles.');
+            break;
+        }
+
         // Randomized jitter between tiles to reduce rate-limiting.
         const { tileJitterMinMs, tileJitterMaxMs } = config.scraper;
         const jitter = tileJitterMinMs + Math.random() * (tileJitterMaxMs - tileJitterMinMs);
@@ -900,12 +910,27 @@ async function scrapeInitialData(searchQuery, limit = null, format = 'excel', ti
             return results;
         }
 
+        // Fix #4: scale tileRings down dynamically based on initial yield so we
+        // don't burn time navigating a large grid when the area is clearly sparse.
+        let effectiveTileRings = tileRings;
+        if (results._feedExhausted) {
+            // Feed was fully exhausted on the first view — skip tiled navigation entirely.
+            effectiveTileRings = 0;
+            console.log(`Initial feed exhausted with ${results.length} results. Setting tileRings=0 to skip grid navigation.`);
+        } else if (results.length <= 5) {
+            effectiveTileRings = Math.min(tileRings, 1);
+            console.log(`Sparse initial yield (${results.length}). Capping tileRings at 1.`);
+        } else if (results.length <= 20) {
+            effectiveTileRings = Math.min(tileRings, 1);
+            console.log(`Moderate initial yield (${results.length}). Capping tileRings at 1.`);
+        }
+
         // Then interact with the map to get more results (only if we haven't reached the limit)
         let mapResults = [];
         // Check if we've reached the limit after initial scraping
         const hasReachedLimit = limit && limit > 0 && results.length >= limit;
-        
-        if (!hasReachedLimit) {
+
+        if (!hasReachedLimit && effectiveTileRings > 0) {
             console.log('Starting map interaction to find more locations...');
 
             try {
@@ -917,7 +942,7 @@ async function scrapeInitialData(searchQuery, limit = null, format = 'excel', ti
                 // from the URL (e.g. Google didn't write @lat,lng for this query).
                 const startCenter = getMapCenter(page);
                 if (startCenter) {
-                    mapResults = await navigateTiles(page, searchQuery, startCenter, remainingLimit, tileRings);
+                    mapResults = await navigateTiles(page, searchQuery, startCenter, remainingLimit, effectiveTileRings);
                     console.log(`Found ${mapResults.length} additional results from tiled navigation`);
                 } else {
                     console.log('Map center unavailable from URL; falling back to mouse-drag interaction.');
@@ -929,8 +954,10 @@ async function scrapeInitialData(searchQuery, limit = null, format = 'excel', ti
                 console.log('Proceeding with initial results only');
                 mapResults = [];
             }
-        } else {
+        } else if (hasReachedLimit) {
             console.log(`Already reached limit of ${limit} unique results. Skipping map interaction.`);
+        } else {
+            console.log(`tileRings=0 after dynamic scaling. Skipping map interaction.`);
         }
         
         // Combine results and remove duplicates
