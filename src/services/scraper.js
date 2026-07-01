@@ -101,8 +101,14 @@ function formatSearchQuery(query) {
     const processedLinks = new Set();
     const CONCURRENT_LIMIT = config.scraper.concurrentLimit;
     let limitReached = false;
-    let uniqueItemsFound = 0; // Track unique items found
-    const DEDUPLICATION_INTERVAL = 10; // Check for duplicates every 10 items
+    let uniqueItemsFound = 0;
+    const DEDUPLICATION_INTERVAL = 10;
+
+    // Fix: seed totalItemsToScrape from the limit immediately so the counter
+    // denominator is correct before any incrementScrapedCount() calls happen.
+    if (limit && limit > 0 && totalItemsToScrape === 0) {
+        totalItemsToScrape = limit;
+    }
     
     const scrollAndCollect = async () => {
         // Set cookie once for the session
@@ -466,13 +472,9 @@ function formatSearchQuery(query) {
         uniqueItemsFound = results.length; // Update the tracking variable
     }
 
-    // After collecting initial results, set the total
+    // When no limit was given, estimate total from what we found (limit case already seeded above).
     if (results.length > 0 && totalItemsToScrape === 0) {
-        if (limit && limit > 0) {
-            totalItemsToScrape = Math.min(limit, Math.max(results.length * 2, 50));
-        } else {
-            totalItemsToScrape = Math.max(results.length * 2, 50); // Estimate based on initial findings
-        }
+        totalItemsToScrape = Math.max(results.length * 2, 50);
     }
 
     console.log(`Returning ${results.length} unique results (requested limit: ${limit || 'none'})`);
