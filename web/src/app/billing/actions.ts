@@ -38,6 +38,35 @@ export async function createCheckoutSession(priceId: string, organizationId: str
   }
 }
 
+// One-time PAYG top-up for enrichment credits. Uses Stripe Payment mode (not subscription).
+// priceId should map to a one-time Stripe price; credits granted via the webhook.
+export async function createEnrichmentTopupCheckout(priceId: string, organizationId: string) {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+
+  if (!user) {
+    throw new Error('You must be logged in to buy enrichment credits')
+  }
+
+  const origin = process.env.NEXT_PUBLIC_SITE_URL || 'http://localhost:3000'
+
+  const session = await stripe.checkout.sessions.create({
+    payment_method_types: ['card'],
+    billing_address_collection: 'auto',
+    customer_email: user.email,
+    line_items: [{ price: priceId, quantity: 1 }],
+    mode: 'payment',
+    client_reference_id: organizationId,
+    metadata: { type: 'enrichment_topup', price_id: priceId },
+    success_url: `${origin}/dashboard?topup=success`,
+    cancel_url: `${origin}/billing`,
+  })
+
+  if (session.url) {
+    redirect(session.url)
+  }
+}
+
 export async function createBillingPortalSession(customerId: string) {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()

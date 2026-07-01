@@ -11,50 +11,49 @@ export async function POST(request: Request) {
     }
 
     const body = await request.json();
-    const { query, projectId } = body;
+    const { query, keyword, location, projectId, limit } = body;
 
-    if (!query) {
-      return NextResponse.json({ error: 'Query is required' }, { status: 400 });
+    if (!query && !keyword) {
+      return NextResponse.json({ error: 'Query or keyword is required' }, { status: 400 });
     }
 
-    // Insert job into database
+    const resolvedQuery = query || (location ? `${keyword} in ${location}` : keyword);
+
+    // Clamp the per-job limit to a sane range (default 50).
+    const parsedLimit = Math.max(1, Math.min(1000, parseInt(String(limit), 10) || 50));
+
     const { data: job, error: jobError } = await supabase
       .from('scraping_jobs')
       .insert({
-        project_id: projectId || '00000000-0000-0000-0000-000000000000', // Use a default or require valid ID
+        project_id: projectId || null,
         status: 'queued',
-        config: { query },
+        config: {
+          query: resolvedQuery,
+          keyword: keyword || null,
+          location: location || null,
+          limit: parsedLimit,
+        },
       })
       .select()
       .single();
 
     if (jobError) {
       console.error('Job insertion error:', jobError);
-      return NextResponse.json({ error: 'Failed to create job' }, { status: 500 });
+      return NextResponse.json({ error: jobError.message, details: jobError }, { status: 500 });
     }
 
-    // Trigger the Cloudflare Worker
-    // In production, this would likely be pushed to a Cloudflare Queue via API or SDK
-    // Here we use the HTTP trigger we built in the worker
     const workerUrl = process.env.WORKER_URL || 'http://localhost:8787';
-    
-    // We do this non-await so we don't block the response, letting it run in background
-    // (Note: in Vercel Edge, background promises need special handling, but this is a standard API route)
+
     fetch(`${workerUrl}/scrape`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ 
-        query, 
-        jobId: job.id 
-      }),
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query: resolvedQuery, jobId: job.id, limit: parsedLimit }),
     }).catch(err => console.error('Failed to trigger worker:', err));
 
-    return NextResponse.json({ 
-      success: true, 
+    return NextResponse.json({
+      success: true,
       jobId: job.id,
-      message: 'Job queued successfully' 
+      message: 'Job queued successfully',
     });
 
   } catch (error: any) {
@@ -76,23 +75,21 @@ export async function GET(request: Request) {
     const jobId = searchParams.get('id');
 
     if (jobId) {
-      // Get specific job
       const { data, error } = await supabase
         .from('scraping_jobs')
         .select('*')
         .eq('id', jobId)
         .single();
-        
+
       if (error) throw error;
       return NextResponse.json({ job: data });
     } else {
-      // List all jobs
       const { data, error } = await supabase
         .from('scraping_jobs')
         .select('*')
         .order('created_at', { ascending: false })
         .limit(20);
-        
+
       if (error) throw error;
       return NextResponse.json({ jobs: data });
     }

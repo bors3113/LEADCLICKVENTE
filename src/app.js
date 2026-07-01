@@ -2,15 +2,26 @@ const config = require('./config');
 const logger = require('./utils/logger');
 const express = require('express');
 const cors = require('cors');
+const rateLimit = require('express-rate-limit');
 const path = require('path');
 const routes = require('./routes');
 const scraperService = require('./services/scraper');
+const prisma = require('./lib/prisma');
 
 const app = express();
+
+const globalLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 200,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many requests, please try again later.' },
+});
 
 // Middleware
 app.use(cors());
 app.use(express.json());
+app.use(globalLimiter);
 
 // Serve static files from the public directory
 app.use(express.static(path.join(__dirname, '../public')));
@@ -47,8 +58,9 @@ async function shutdown(signal) {
     if (exporter) {
         try { exporter.finalize(); } catch (_) {}
     }
-    server.close(() => {
+    server.close(async () => {
         logger.info('HTTP server closed.');
+        await prisma.$disconnect();
         process.exit(0);
     });
     // Force exit if server doesn't close in 10s

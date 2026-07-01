@@ -1,17 +1,28 @@
+const { createLogger, format, transports } = require('winston');
+const fs = require('fs');
 const config = require('../config');
 
-const LEVELS = { error: 0, warn: 1, info: 2, debug: 3 };
-const currentLevel = LEVELS[config.logLevel] ?? LEVELS.info;
+const LOG_LEVELS = ['error', 'warn', 'info', 'debug'];
+const level = LOG_LEVELS.includes(config.logLevel) ? config.logLevel : 'info';
 
-function ts() {
-    return new Date().toISOString();
-}
+if (!fs.existsSync('logs')) fs.mkdirSync('logs');
 
-const logger = {
-    error: (...args) => currentLevel >= LEVELS.error && console.error(`[${ts()}] ERROR`, ...args),
-    warn:  (...args) => currentLevel >= LEVELS.warn  && console.warn( `[${ts()}] WARN `, ...args),
-    info:  (...args) => currentLevel >= LEVELS.info  && console.log(  `[${ts()}] INFO `, ...args),
-    debug: (...args) => currentLevel >= LEVELS.debug && console.log(  `[${ts()}] DEBUG`, ...args),
-};
+const logger = createLogger({
+  level,
+  format: format.combine(
+    format.timestamp({ format: 'YYYY-MM-DDTHH:mm:ss.SSSZ' }),
+    format.errors({ stack: true }),
+    format.printf(({ timestamp, level: lvl, message, stack }) =>
+      stack
+        ? `[${timestamp}] ${lvl.toUpperCase()}: ${message}\n${stack}`
+        : `[${timestamp}] ${lvl.toUpperCase()}: ${message}`
+    )
+  ),
+  transports: [
+    new transports.Console(),
+    new transports.File({ filename: 'logs/error.log', level: 'error' }),
+    new transports.File({ filename: 'logs/combined.log' }),
+  ],
+});
 
 module.exports = logger;

@@ -4,48 +4,39 @@ import { revalidatePath } from 'next/cache'
 import { redirect } from 'next/navigation'
 import { createClient } from '@/utils/supabase/server'
 
-export async function login(formData: FormData) {
+export type AuthState = { error?: string; message?: string } | null
+
+export async function login(prevState: AuthState, formData: FormData): Promise<AuthState> {
   const supabase = await createClient()
 
-  const data = {
+  const { error } = await supabase.auth.signInWithPassword({
     email: formData.get('email') as string,
     password: formData.get('password') as string,
-  }
+  })
 
-  const { error } = await supabase.auth.signInWithPassword(data)
-
-  if (error) {
-    redirect('/login?error=' + encodeURIComponent(error.message))
-  }
+  if (error) return { error: error.message }
 
   revalidatePath('/', 'layout')
   redirect('/dashboard')
 }
 
-export async function signup(formData: FormData) {
+export async function signup(prevState: AuthState, formData: FormData): Promise<AuthState> {
   const supabase = await createClient()
 
-  const data = {
-    email: formData.get('email') as string,
-    password: formData.get('password') as string,
-  }
-
+  const email = formData.get('email') as string
+  const password = formData.get('password') as string
   const origin = process.env.NEXT_PUBLIC_SITE_URL || 'http://localhost:3001'
 
   const { data: authData, error } = await supabase.auth.signUp({
-    ...data,
-    options: {
-      emailRedirectTo: `${origin}/auth/callback`,
-    },
+    email,
+    password,
+    options: { emailRedirectTo: `${origin}/auth/callback` },
   })
 
-  if (error) {
-    redirect('/login?error=' + encodeURIComponent(error.message))
-  }
+  if (error) return { error: error.message }
 
-  // If email confirmation is required, session will be null
   if (!authData.session) {
-    redirect('/login?message=' + encodeURIComponent('Account created! Check your email to confirm your account before signing in.'))
+    return { message: 'Account created — check your email to confirm before signing in.' }
   }
 
   revalidatePath('/', 'layout')
@@ -54,21 +45,13 @@ export async function signup(formData: FormData) {
 
 export async function loginWithGoogle() {
   const supabase = await createClient()
-  
-  const origin = process.env.NEXT_PUBLIC_SITE_URL || 'http://localhost:3000'
-  
+  const origin = process.env.NEXT_PUBLIC_SITE_URL || 'http://localhost:3001'
+
   const { data, error } = await supabase.auth.signInWithOAuth({
     provider: 'google',
-    options: {
-      redirectTo: `${origin}/auth/callback`,
-    },
+    options: { redirectTo: `${origin}/auth/callback` },
   })
-  
-  if (data.url) {
-    redirect(data.url)
-  }
-  
-  if (error) {
-    redirect('/login?error=' + encodeURIComponent(error.message))
-  }
+
+  if (error) throw error
+  if (data.url) redirect(data.url)
 }

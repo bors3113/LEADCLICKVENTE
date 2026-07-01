@@ -3,26 +3,41 @@
   "version": "1.0.0",
   "main": "src/app.js",
   "scripts": {
-    "start": "node src/app.js",
-    "dev": "nodemon src/app.js"
+    "dev": "concurrently --names \"api,web\" -c \"cyan,magenta\" --kill-others-on-fail \"nodemon src/app.js\" \"npm run dev --prefix web\"",
+    "start": "concurrently --names \"api,web\" -c \"cyan,magenta\" --kill-others-on-fail \"node src/app.js\" \"npm run start --prefix web\"",
+    "build": "npm run build --prefix web",
+    "dev:api": "nodemon src/app.js",
+    "dev:web": "npm run dev --prefix web",
+    "start:api": "node src/app.js",
+    "start:web": "npm run start --prefix web"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1077.0",
+    "@prisma/adapter-pg": "^7.8.0",
+    "@prisma/client": "^7.8.0",
+    "apify-client": "^2.23.4",
     "axios": "^1.6.0",
     "cheerio": "^1.0.0-rc.12",
     "cors": "^2.8.5",
     "dotenv": "^17.4.2",
     "express": "^4.17.1",
+    "express-rate-limit": "^8.5.2",
+    "pg": "^8.22.0",
+    "prisma": "^7.8.0",
     "puppeteer": "^24.6.1",
     "puppeteer-cluster": "^0.23.0",
     "puppeteer-core": "^25.2.1",
     "puppeteer-extra": "^3.3.6",
     "puppeteer-extra-plugin-stealth": "^2.11.2",
-    "xlsx": "^0.18.5"
+    "winston": "^3.19.0",
+    "xlsx": "^0.18.5",
+    "zod": "^4.4.3"
   },
   "engines": {
     "node": ">=18.0.0"
   },
   "devDependencies": {
+    "concurrently": "^10.0.3",
     "nodemon": "^2.0.22"
   },
   "pnpm": {

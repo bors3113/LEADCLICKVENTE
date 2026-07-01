@@ -10,6 +10,7 @@ const path = require('path');
 const axios = require('axios');
 const cheerio = require('cheerio');
 const { RealTimeExporter } = require('../utils/realTimeExporter');
+const prisma = require('../lib/prisma');
 
 puppeteerExtra.use(StealthPlugin());
 
@@ -362,12 +363,27 @@ function formatSearchQuery(query) {
                 await newPage.close();
                 processedLinks.add(result.link);
                 incrementScrapedCount();
-                
+
+                // Persist extracted record to database
+                if (currentJobId) {
+                    prisma.extracted_records.create({
+                        data: {
+                            job_id: currentJobId,
+                            business_name: result.name !== 'N/A' ? result.name : null,
+                            address: result.address !== 'N/A' ? result.address : null,
+                            phone: result.phone !== 'N/A' ? result.phone : null,
+                            website: result.website !== 'N/A' ? result.website : null,
+                            rating: result.rating != null && result.rating !== 'N/A' ? String(result.rating) : null,
+                            raw_data: result,
+                        },
+                    }).catch(err => console.error('Failed to persist extracted record:', err.message));
+                }
+
                 // Save to real-time export
                 if (realTimeExporter) {
                     realTimeExporter.addItem(result);
                 }
-                
+
                 console.log(`Processed: ${result.name}`);
             } catch (error) {
                 console.error(`Error collecting data for ${result.name}:`, error.message);
@@ -809,7 +825,22 @@ async function scrapeInitialData(searchQuery, limit = null, format = 'excel', ti
     // Set current query and scraping status
     currentScrapingQuery = searchQuery;
     isScrapingActive = true;
-    
+
+    // Persist job to database
+    try {
+        const job = await prisma.scraping_jobs.create({
+            data: {
+                status: 'running',
+                config: { query: searchQuery, limit: limit ?? null, format },
+            },
+        });
+        currentJobId = job.id;
+        console.log(`Created scraping job: ${currentJobId}`);
+    } catch (dbErr) {
+        console.error('Failed to create scraping job in DB (continuing without persistence):', dbErr.message);
+        currentJobId = null;
+    }
+
     // Initialize real-time exporter
     const sanitizedQuery = searchQuery.replace(/[^a-z0-9]/gi, '_').toLowerCase();
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
@@ -1101,6 +1132,19 @@ async function scrapeInitialData(searchQuery, limit = null, format = 'excel', ti
         return [];
     } finally {
         isScrapingActive = false;
+
+        // Update job status in database
+        if (currentJobId) {
+            prisma.scraping_jobs.update({
+                where: { id: currentJobId },
+                data: {
+                    status: 'completed',
+                    progress: scrapedItemsCount,
+                    completed_at: new Date(),
+                },
+            }).catch(err => console.error('Failed to update scraping job status:', err.message));
+        }
+
         try {
             await browser.close();
         } catch (closeError) {
@@ -1659,6 +1703,7 @@ let totalItemsToScrape = 0;
 let scrapingStartTime = null;
 let currentScrapingQuery = '';
 let realTimeExporter = null;
+let currentJobId = null;
 
 // Reset scraping stats
 function resetScrapingStats() {
@@ -1739,140 +1784,152 @@ async function saveDataToJson(data, filePath = 'data/scraped_data.json') {
     }
 }
 
-async function scrapeAndSaveData(urls) {
-    // --- New Code ---
-    // Reset stop flag at the beginning of a full scrape job
-    // resetStopRequest(); // Moved reset to server endpoint before calling this
-    // --- End New Code ---
+// ---------------------------------------------------------------------------
+// LinkedIn data enrichment (Apify)
+// ---------------------------------------------------------------------------
+// Reads an existing scraped Excel or CSV file from the results/ directory,
+// calls one or more Apify LinkedIn actors on the leads it contains, merges
+// the returned fields as new columns onto each row, and re-exports the
+// enriched file. Returns enrichment stats used by the controller for billing.
+//
+// @param {string} filename - just the basename, e.g. "search_2024.xlsx"
+// @param {string[]} types  - subset of ['company','employees','profile']
+// @returns {Promise<{enrichedRows, enrichedCount, creditsByType, outputPath}>}
+async function enrichScrapedFile(filename, types) {
+    const XLSX = require('xlsx');
+    const { exportToExcel, exportToCSV } = require('../utils/excelExporter');
+    const { enrichCompany, enrichEmployees, enrichProfiles, normalizeKey, normalizeLinkedinUrl } = require('./apifyEnrichment');
 
-    let browser;
-    const allScrapedData = [];
-    console.log(`Starting scrape for ${urls.length} URLs...`);
+    const sanitized = path.basename(filename);
+    const inputPath = path.join(process.cwd(), 'results', sanitized);
 
-    try {
-        browser = await puppeteer.launch({ headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox'] });
-        const page = await browser.newPage();
-        await page.setViewport({ width: 1280, height: 800 });
-        // Optional: Set a realistic user agent
-        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36');
-
-
-        for (const url of urls) {
-            // --- New Code ---
-            // Check if a stop has been requested before processing the next URL
-            if (isStopRequestedGlobal) {
-                console.log('Stop requested. Halting further URL processing.');
-                break; // Exit the loop
-            }
-            // --- End New Code ---
-
-            console.log(`Navigating to ${url}...`);
-            try {
-                await page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 }); // Wait for network activity to cease
-
-                // Optional: Add a small delay or wait for a specific element that indicates page load
-                await page.evaluate(() => new Promise(resolve => setTimeout(resolve, 3000))); // Wait 3 seconds
-                // Example: await page.waitForSelector('h1.DUwDvf', { timeout: 30000 }); // Wait for title element
-
-                console.log(`Scraping data for ${url}...`);
-                const scrapedData = await scrapeGoogleMapsData(page); // Use the detailed scraper
-
-                if (scrapedData) {
-                    scrapedData.url = url; // Add the source URL
-                    console.log('Scraped data:', scrapedData);
-                    allScrapedData.push(scrapedData);
-                } else {
-                    console.log(`No data extracted for ${url}`);
-                }
-
-            } catch (error) {
-                console.error(`Failed to process ${url}: ${error.message}`);
-                // Optionally add placeholder data for failed URLs
-                 allScrapedData.push({
-                    url: url,
-                    name: "Scrape Error",
-                    rating: "N/A",
-                    reviewsCount: "N/A",
-                    address: "N/A",
-                    website: "N/A",
-                    phone: "N/A",
-                    openingHours: "N/A",
-                    error: error.message
-                 });
-            }
-             // Optional: Add a delay between requests to avoid rate limiting
-             await page.evaluate(() => new Promise(resolve => setTimeout(resolve, 1000 + Math.random() * 2000))); // Wait 1-3 seconds
-        }
-
-    } catch (error) {
-        console.error('An error occurred during the scraping process:', error);
-    } finally {
-        if (browser) {
-            await browser.close();
-            console.log('Browser closed.');
-        }
-        // --- Updated Code ---
-        // Save whatever data was collected, even if stopped early or an error occurred
-        if (allScrapedData.length > 0) {
-             console.log(`Saving ${allScrapedData.length} scraped items...`);
-             await saveDataToJson(allScrapedData);
-        } else {
-             console.log("No data collected to save.");
-        }
-        // Reset the flag after the process finishes (or is stopped)
-        // It's better to reset *before* starting the next scrape in the server endpoint
-        // resetStopRequest();
-        // --- End Updated Code ---
+    if (!fs.existsSync(inputPath)) {
+        throw new Error(`Source file not found: ${sanitized}`);
     }
-    console.log('Scraping process finished.');
-    return allScrapedData; // Return collected data
+
+    // Parse the file — xlsx handles both .xlsx and .csv transparently.
+    const workbook = XLSX.readFile(inputPath);
+    const sheetName = workbook.SheetNames[0];
+    const rows = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName]);
+
+    if (rows.length === 0) {
+        throw new Error('Source file contains no rows.');
+    }
+
+    // Collect identifiers per actor type, deduplicated.
+    const companyIdentifiers = [];
+    const profileUrls = [];
+
+    for (const row of rows) {
+        // Company + employees actors both accept website or business name.
+        const companyId = (row.website || row.Website || row.business_name || row['Business Name'] || row.name || row.Name || '').trim();
+        if (companyId) companyIdentifiers.push(companyId);
+
+        // Profile actor needs a LinkedIn profile URL.
+        // The scraper stores these in linkedin_links (comma-separated) or socialMedia.linkedin.
+        const linkedinLinks = (row.linkedin_links || row['LinkedIn Links'] || '').trim();
+        const firstLink = linkedinLinks.split(',')[0].trim();
+        if (firstLink && firstLink.includes('linkedin.com/in/')) {
+            profileUrls.push(firstLink);
+        }
+    }
+
+    const results = {};
+    const creditsByType = {};
+
+    if (types.includes('company') && companyIdentifiers.length > 0) {
+        const { byIdentifier } = await enrichCompany([...new Set(companyIdentifiers.map(normalizeKey))]);
+        results.company = byIdentifier;
+        creditsByType.company = byIdentifier.size;
+    }
+
+    if (types.includes('employees') && companyIdentifiers.length > 0) {
+        const { byIdentifier } = await enrichEmployees([...new Set(companyIdentifiers.map(normalizeKey))]);
+        results.employees = byIdentifier;
+        creditsByType.employees = byIdentifier.size;
+    }
+
+    if (types.includes('profile') && profileUrls.length > 0) {
+        const { byIdentifier } = await enrichProfiles([...new Set(profileUrls)]);
+        results.profile = byIdentifier;
+        creditsByType.profile = byIdentifier.size;
+    }
+
+    // Merge enrichment data onto each row as flat new columns.
+    const enrichedRows = rows.map(row => {
+        const merged = { ...row };
+
+        const companyKey = normalizeKey(
+            row.website || row.Website || row.business_name || row['Business Name'] || row.name || row.Name || ''
+        );
+
+        if (results.company && results.company.has(companyKey)) {
+            const d = results.company.get(companyKey);
+            merged.li_company_name = d.name || '';
+            merged.li_company_industry = (d.industries || []).join(', ');
+            merged.li_company_employee_count = d.employeeCount || '';
+            merged.li_company_founded = d.foundedOn || '';
+            merged.li_company_headquarters = d.headquartersAddress || '';
+            merged.li_company_follower_count = d.followerCount || '';
+            merged.li_company_url = d.linkedinUrl || '';
+            merged.li_company_website = d.website || '';
+            merged.li_company_description = d.tagline || d.description || '';
+        }
+
+        if (results.employees && results.employees.has(companyKey)) {
+            const employees = results.employees.get(companyKey) || [];
+            merged.li_employees = employees
+                .map(e => [e.firstName, e.lastName, e.headline, e.linkedinUrl].filter(Boolean).join(' | '))
+                .join('; ');
+            merged.li_employee_count_scraped = employees.length;
+        }
+
+        const linkedinLinks = (row.linkedin_links || row['LinkedIn Links'] || '').trim();
+        const firstLink = linkedinLinks.split(',')[0].trim();
+        if (results.profile && firstLink && results.profile.has(firstLink)) {
+            const p = results.profile.get(firstLink);
+            merged.li_profile_name = p.fullName || [p.firstName, p.lastName].filter(Boolean).join(' ');
+            merged.li_profile_headline = p.headline || '';
+            merged.li_profile_title = p.currentTitle || '';
+            merged.li_profile_company = p.currentCompany || '';
+            merged.li_profile_email = (p.emails || []).map(e => e.email || e).join(', ');
+            merged.li_profile_phone = (p.phones || []).map(ph => ph.phone || ph).join(', ');
+            merged.li_profile_location = p.location || '';
+            merged.li_profile_url = p.linkedinUrl || firstLink;
+        }
+
+        return merged;
+    });
+
+    const enrichedCount =
+        (results.company ? results.company.size : 0) +
+        (results.employees ? results.employees.size : 0) +
+        (results.profile ? results.profile.size : 0);
+
+    // Re-export enriched data with a _linkedin suffix.
+    const ext = path.extname(sanitized).toLowerCase();
+    const base = path.basename(sanitized, ext);
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const outputName = `${base}_linkedin_${timestamp}`;
+    let outputPath;
+    if (ext === '.csv') {
+        outputPath = exportToCSV(enrichedRows, outputName);
+    } else {
+        outputPath = exportToExcel(enrichedRows, outputName);
+    }
+
+    return { enrichedRows, enrichedCount, creditsByType, outputPath };
 }
-
-const scrapeAmazon = async (searchTerm, numberOfPages, callback) => {
-  isScrapingActive = true;
-  currentScrapingJob = { stop: false };
-  const job = currentScrapingJob;
-  
-  try {
-    // ... existing code ...
-    
-    for (let i = 1; i <= numberOfPages; i++) {
-      // Check if scraping should be stopped
-      if (job.stop) {
-        console.log("Scraping stopped by user");
-        break;
-      }
-      
-      // ... existing scraping code ...
-      
-      // After each page is scraped, check again if we should stop
-      if (job.stop) {
-        console.log("Scraping stopped by user after page", i);
-        break;
-      }
-      
-      // ... existing code for pagination ...
-    }
-    
-    // ... existing code ...
-  } catch (error) {
-    // ... existing error handling ...
-  } finally {
-    isScrapingActive = false;
-    currentScrapingJob = null;
-  }
-  
-  // ... existing code ...
-};
 
 // Export the control functions
 module.exports = {
-    scrapeAndSaveData,
     requestStopScraping,
     resetStopRequest,
     scrapeInitialData,
+    getCurrentJobId: () => currentJobId,
     processJsonFile,
     processJsonFileWithContactInfo,
+    enrichScrapedFile,
     extractContactInfo,
     normalizeEmails,
     normalizeSocialLinks,
@@ -1886,7 +1943,6 @@ module.exports = {
     checkForBlocking,
     scrapeCurrentView,
     continuousDrag,
-    scrapeAmazon,
     stopScraping,
     isScrapingActive: () => isScrapingActive,
     getScrapingStats,

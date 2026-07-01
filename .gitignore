@@ -4,3 +4,15 @@ results/
 debug_*.html
 debug_*.png
 *.local
+
+/src/generated/prisma
+
+# Build artifacts
+scraper-worker/dist/
+
+# Logs
+logs/
+*.log
+
+# Stray local files
+*.pdf

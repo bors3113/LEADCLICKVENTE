@@ -2,22 +2,35 @@
 
 import { useState } from 'react';
 import { Loader2 } from 'lucide-react';
+import { toast } from 'sonner';
 
 export function Contact() {
   const [email, setEmail] = useState('');
-  const [status, setStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
+  const [loading, setLoading] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!email) return;
-    
-    setStatus('loading');
-    
-    // Simulate API call for waitlist
-    setTimeout(() => {
-      setStatus('success');
+    setLoading(true);
+
+    try {
+      const res = await fetch('/api/waitlist', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email }),
+      });
+      const data = await res.json();
+
+      if (!res.ok) throw new Error(data.error || 'Failed to subscribe');
+
+      toast.success('You\'re on the list! We\'ll be in touch.');
       setEmail('');
-    }, 1000);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Something went wrong';
+      toast.error(message);
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -31,9 +44,7 @@ export function Contact() {
             We're constantly adding new data points and scraping capabilities. Join our newsletter to stay updated.
           </p>
           <form className="mx-auto mt-10 flex max-w-md gap-x-4" onSubmit={handleSubmit}>
-            <label htmlFor="email-address" className="sr-only">
-              Email address
-            </label>
+            <label htmlFor="email-address" className="sr-only">Email address</label>
             <input
               id="email-address"
               name="email"
@@ -47,15 +58,12 @@ export function Contact() {
             />
             <button
               type="submit"
-              disabled={status === 'loading'}
+              disabled={loading}
               className="flex-none rounded-md bg-primary px-3.5 py-2.5 text-sm font-semibold text-primary-foreground shadow-sm hover:bg-primary/90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary disabled:opacity-50"
             >
-              {status === 'loading' ? <Loader2 className="h-5 w-5 animate-spin" /> : 'Notify me'}
+              {loading ? <Loader2 className="h-5 w-5 animate-spin" /> : 'Notify me'}
             </button>
           </form>
-          {status === 'success' && (
-            <p className="mt-4 text-center text-sm text-green-600">Thanks for subscribing!</p>
-          )}
         </div>
       </div>
     </div>

@@ -17,6 +17,10 @@ browser = { binding = "MYBROWSER" }
 # max_retries = 3
 # dead_letter_queue = "scraping-jobs-dlq"
 
+[[r2_buckets]]
+binding = "RESULTS_BUCKET"
+bucket_name = "leadsclickvente"
+
 [vars]
 # SUPABASE_URL = "your-supabase-url"
 # SUPABASE_SERVICE_KEY = "your-supabase-service-key"

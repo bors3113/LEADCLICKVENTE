@@ -3,6 +3,7 @@ require('dotenv').config();
 module.exports = {
     port: parseInt(process.env.PORT, 10) || 3008,
     logLevel: process.env.LOG_LEVEL || 'info',
+    apiKey: process.env.API_KEY || '',
 
     browser: {
         headless: process.env.BROWSER_HEADLESS !== 'false',
@@ -25,6 +26,30 @@ module.exports = {
         accountId: process.env.CF_ACCOUNT_ID,
         browserToken: process.env.CF_BROWSER_TOKEN,
         useCloudflareBrowser: process.env.USE_CLOUDFLARE_BROWSER === 'true',
+    },
+
+    r2: {
+        accountId: process.env.R2_ACCOUNT_ID || '',
+        accessKeyId: process.env.R2_ACCESS_KEY_ID || '',
+        secretAccessKey: process.env.R2_SECRET_ACCESS_KEY || '',
+        bucket: process.env.R2_BUCKET || 'leadsclickvente',
+        enabled: !!(process.env.R2_ACCOUNT_ID && process.env.R2_ACCESS_KEY_ID && process.env.R2_SECRET_ACCESS_KEY),
+    },
+
+    // Apify LinkedIn enrichment. Actors are pay-per-result; we resell as credits
+    // at ~3-5x the raw Apify cost. Credit costs per enriched row are configurable
+    // so pricing can be tuned without code changes.
+    apify: {
+        token: process.env.APIFY_TOKEN || '',
+        companyActorId: process.env.APIFY_COMPANY_ACTOR || 'harvestapi/linkedin-company',
+        employeesActorId: process.env.APIFY_EMPLOYEES_ACTOR || 'harvestapi/linkedin-company-employees',
+        profileActorId: process.env.APIFY_PROFILE_ACTOR || 'futurizerush/linkedin-profile-scraper',
+        // Credits charged per successfully enriched row, by enrichment type.
+        creditCost: {
+            company: parseInt(process.env.APIFY_CREDIT_COST_COMPANY, 10) || 1,
+            employees: parseInt(process.env.APIFY_CREDIT_COST_EMPLOYEES, 10) || 2,
+            profile: parseInt(process.env.APIFY_CREDIT_COST_PROFILE, 10) || 4,
+        },
     },
 
     scraper: {

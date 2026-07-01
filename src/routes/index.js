@@ -1,24 +1,31 @@
 const express = require('express');
+const rateLimit = require('express-rate-limit');
 const router = express.Router();
 const scraperController = require('../controllers/scraperController');
-const path = require('path');
+const requireApiKey = require('../middleware/auth');
 
-// Route for single search query
-router.post('/scrape', scraperController.scrapeQuery);
+const scrapeLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many scrape requests, please slow down.' },
+});
 
-// Route for processing JSON file
+// Health check (public)
+router.get('/health', (req, res) => {
+  res.json({ status: 'ok', uptime: process.uptime() });
+});
+
+// All routes below require a valid API key when API_KEY is set in the environment
+router.use(requireApiKey);
+
+router.post('/scrape', scrapeLimiter, scraperController.scrapeQuery);
 router.post('/process-json', scraperController.processJson);
-
-// Route for processing JSON with contact info
 router.post('/process-json-contact', scraperController.processJsonContact);
-
-// Route for downloading files
 router.get('/download', scraperController.downloadFile);
-
-// Add the new route for stopping the scraper
 router.post('/stop-scrape', scraperController.stopScraping);
-
-// Add new route for getting scraper status
 router.get('/scrape-status', scraperController.getScrapeStatus);
+router.post('/enrich', scraperController.enrichFile);
 
-module.exports = router; 
+module.exports = router;

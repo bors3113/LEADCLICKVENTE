@@ -1,11 +1,31 @@
+const { z } = require('zod');
 const config = require('../config');
 const { scrapeInitialData,
     processJsonFile,
-    processJsonFileWithContactInfo} = require('../services/scraper');
+    processJsonFileWithContactInfo,
+    enrichScrapedFile} = require('../services/scraper');
 const { exportToExcel, exportToCSV } = require('../utils/excelExporter');
 const path = require('path');
 const fs = require('fs');
 const scraperService = require('../services/scraper');
+const prisma = require('../lib/prisma');
+const { uploadToR2 } = require('../lib/r2');
+
+const scrapeSchema = z.object({
+    query: z.string().min(1).max(300).optional(),
+    queries: z.array(z.string().min(1).max(300)).max(50).optional(),
+    limit: z.coerce.number().int().min(1).max(10000).optional(),
+    format: z.enum(['excel', 'csv']).default('excel'),
+    globalLimit: z.boolean().default(false),
+    tileRings: z.coerce.number().int().min(0).max(5).optional(),
+}).refine(d => d.query || (d.queries && d.queries.length > 0), {
+    message: 'Provide query or queries array',
+});
+
+const jsonSchema = z.object({
+    filename: z.string().min(1).max(255).regex(/^[\w\-. ]+\.json$/, 'Invalid filename'),
+    outputFormat: z.enum(['excel', 'csv']).default('excel'),
+});
 
 const scraperController = {
     // Handle single or multiple search queries
@@ -15,39 +35,24 @@ const scraperController = {
         }
 
         try {
-            const { query, queries, limit, format = 'excel', globalLimit = false, tileRings } = req.body;
+            const parsed = scrapeSchema.safeParse(req.body);
+            if (!parsed.success) {
+                return res.status(400).json({ error: parsed.error.issues[0].message });
+            }
+            const { query, queries, limit: parsedLimit, format, globalLimit, tileRings } = parsed.data;
 
-            // Support both single query and multiple queries
             let searchQueries = [];
-            if (queries && Array.isArray(queries) && queries.length > 0) {
+            if (queries && queries.length > 0) {
                 searchQueries = queries
-                    .filter(q => typeof q === 'string')
                     .map(q => q.trim())
                     .filter(q => q.length > 0)
                     .slice(0, config.scraper.maxQueriesPerRequest);
             } else if (query) {
-                const trimmed = typeof query === 'string' ? query.trim() : '';
+                const trimmed = query.trim();
                 if (trimmed) searchQueries = [trimmed];
             }
 
-            if (searchQueries.length === 0) {
-                return res.status(400).json({ error: 'Search query or queries array is required' });
-            }
-
-            const parsedLimit = limit !== undefined ? parseInt(limit, 10) : undefined;
-            if (parsedLimit !== undefined && (isNaN(parsedLimit) || parsedLimit < 1)) {
-                return res.status(400).json({ error: 'limit must be a positive integer' });
-            }
-
-            // Optional tiling coverage radius (1 => 3x3 grid). Falls back to the
-            // configured default when not supplied.
-            let parsedTileRings = config.scraper.tileRings;
-            if (tileRings !== undefined) {
-                parsedTileRings = parseInt(tileRings, 10);
-                if (isNaN(parsedTileRings) || parsedTileRings < 0 || parsedTileRings > 5) {
-                    return res.status(400).json({ error: 'tileRings must be an integer between 0 and 5' });
-                }
-            }
+            const parsedTileRings = tileRings !== undefined ? tileRings : config.scraper.tileRings;
 
             const allResults = [];
             const queryResults = [];
@@ -127,6 +132,14 @@ const scraperController = {
                 justFileName = path.basename(filePath);
             }
             
+            // Upload result file to R2 (best-effort; non-blocking on failure)
+            let r2Key = null;
+            try {
+                r2Key = await uploadToR2(filePath);
+            } catch (r2Err) {
+                console.warn('R2 upload failed (non-fatal):', r2Err.message);
+            }
+
             // Fix #2: expose whether the area was exhausted before the limit was reached
             const areaExhausted = parsedLimit
                 ? allResults.length < parsedLimit
@@ -134,11 +147,13 @@ const scraperController = {
 
             res.json({
                 success: true,
+                jobId: scraperService.getCurrentJobId(),
                 queries: searchQueries,
                 queryResults: queryResults,
                 totalResultsCount: allResults.length,
                 fileName: justFileName,
                 downloadUrl: `/api/download?file=${justFileName}`,
+                r2Key: r2Key || null,
                 limit: parsedLimit || 'No limit',
                 requestedLimit: parsedLimit || null,
                 areaExhausted
@@ -152,10 +167,11 @@ const scraperController = {
     // Handle JSON file processing
     async processJson(req, res) {
         try {
-            const { filename, outputFormat = 'excel' } = req.body;
-            if (!filename) {
-                return res.status(400).json({ error: 'Filename is required' });
+            const parsed = jsonSchema.safeParse(req.body);
+            if (!parsed.success) {
+                return res.status(400).json({ error: parsed.error.issues[0].message });
             }
+            const { filename, outputFormat } = parsed.data;
 
             // Process the JSON file
             const processedData = await processJsonFile(filename);
@@ -191,10 +207,11 @@ const scraperController = {
     // Handle JSON file processing with contact info
     async processJsonContact(req, res) {
         try {
-            const { filename, outputFormat = 'excel' } = req.body;
-            if (!filename) {
-                return res.status(400).json({ error: 'Filename is required' });
+            const parsed = jsonSchema.safeParse(req.body);
+            if (!parsed.success) {
+                return res.status(400).json({ error: parsed.error.issues[0].message });
             }
+            const { filename, outputFormat } = parsed.data;
 
             // Process the JSON file with contact info
             const processedData = await processJsonFileWithContactInfo(filename);
@@ -272,7 +289,111 @@ const scraperController = {
             console.error('Error getting scraper status:', error);
             res.status(500).json({ success: false, message: 'Failed to get scraping status' });
         }
-    }
+    },
+
+    // Enrich an existing scraped Excel/CSV file with LinkedIn data via Apify.
+    // Expects: { filename, types, outputFormat?, organizationId? }
+    // - filename: basename of a file in results/ (e.g. "search_2024.xlsx")
+    // - types: array from ['company','employees','profile']
+    // - outputFormat: 'excel' | 'csv' (defaults to the input format)
+    // - organizationId: used to record the enrichment_job in the DB
+    async enrichFile(req, res) {
+        const enrichSchema = z.object({
+            filename: z.string().min(1).max(255).regex(/^[\w\-. ]+\.(xlsx|csv)$/i, 'Must be an .xlsx or .csv file'),
+            types: z.array(z.enum(['company', 'employees', 'profile'])).min(1),
+            outputFormat: z.enum(['excel', 'csv']).optional(),
+            organizationId: z.string().uuid().optional(),
+        });
+
+        const parsed = enrichSchema.safeParse(req.body);
+        if (!parsed.success) {
+            return res.status(400).json({ error: parsed.error.issues[0].message });
+        }
+
+        const { filename, types, organizationId } = parsed.data;
+
+        // Create a DB tracking record if an org is provided.
+        let jobRecord = null;
+        if (organizationId) {
+            try {
+                jobRecord = await prisma.enrichment_jobs.create({
+                    data: {
+                        organization_id: organizationId,
+                        source_file: filename,
+                        types,
+                        status: 'running',
+                    },
+                });
+            } catch (dbErr) {
+                // DB tracking is best-effort — don't block enrichment if DB fails.
+                console.error('Failed to create enrichment_job record:', dbErr);
+            }
+        }
+
+        try {
+            const { enrichedCount, creditsByType, outputPath } = await enrichScrapedFile(filename, types);
+
+            const outputBasename = path.basename(outputPath);
+
+            // Compute total credits charged (success rows only — already counted inside enrichScrapedFile).
+            const creditsCharged =
+                (creditsByType.company || 0) * config.apify.creditCost.company +
+                (creditsByType.employees || 0) * config.apify.creditCost.employees +
+                (creditsByType.profile || 0) * config.apify.creditCost.profile;
+
+            // Persist enrichment_results summary and mark job completed.
+            if (jobRecord) {
+                try {
+                    // Write one result row per type as a summary entry.
+                    const resultRows = Object.entries(creditsByType).map(([type, count]) => ({
+                        job_id: jobRecord.id,
+                        identifier: `${type}:batch`,
+                        type,
+                        linkedin_data: { enrichedCount: count },
+                    }));
+                    if (resultRows.length > 0) {
+                        await prisma.enrichment_results.createMany({ data: resultRows });
+                    }
+                    await prisma.enrichment_jobs.update({
+                        where: { id: jobRecord.id },
+                        data: {
+                            status: 'completed',
+                            enriched_count: enrichedCount,
+                            credits_charged: creditsCharged,
+                            output_file: outputBasename,
+                            completed_at: new Date(),
+                        },
+                    });
+                } catch (dbErr) {
+                    console.error('Failed to update enrichment_job record:', dbErr);
+                }
+            }
+
+            return res.json({
+                success: true,
+                jobId: jobRecord?.id || null,
+                fileName: outputBasename,
+                downloadUrl: `/api/download?file=${outputBasename}`,
+                enrichedCount,
+                creditsByType,
+                creditsCharged,
+            });
+
+        } catch (error) {
+            console.error('Enrichment error:', error);
+
+            if (jobRecord) {
+                try {
+                    await prisma.enrichment_jobs.update({
+                        where: { id: jobRecord.id },
+                        data: { status: 'failed', completed_at: new Date() },
+                    });
+                } catch (_) {}
+            }
+
+            return res.status(500).json({ error: error.message });
+        }
+    },
 };
 
 module.exports = scraperController; 

@@ -1,5 +1,5 @@
 import { createClient } from '@/utils/supabase/server'
-import { createCheckoutSession, createBillingPortalSession } from './actions'
+import { createCheckoutSession, createBillingPortalSession, createEnrichmentTopupCheckout } from './actions'
 import { redirect } from 'next/navigation'
 
 export default async function BillingPage() {
@@ -10,11 +10,25 @@ export default async function BillingPage() {
     redirect('/login')
   }
 
-  // Normally, we'd fetch the user's organization and subscription from Supabase here
-  // Mocking it for now as UI demonstration
-  const mockOrgId = "org_123"
-  const hasActiveSubscription = false 
-  const mockCustomerId = "cus_12345"
+  const { data: profile } = await supabase.from('profiles').select('stripe_customer_id, subscription_status, organization_id').eq('id', user.id).single()
+  const typedProfile = profile as { stripe_customer_id?: string; subscription_status?: string; organization_id?: string } | null
+  const mockOrgId = typedProfile?.organization_id ?? user.id
+  const hasActiveSubscription = typedProfile?.subscription_status === 'active'
+  const mockCustomerId = typedProfile?.stripe_customer_id ?? ''
+  const proPriceId = process.env.NEXT_PUBLIC_STRIPE_PRO_PRICE_ID ?? ''
+
+  // Enrichment credit top-up Stripe price IDs (one-time payments).
+  const enrich500PriceId = process.env.NEXT_PUBLIC_STRIPE_ENRICH_500_PRICE_ID ?? ''
+  const enrich2000PriceId = process.env.NEXT_PUBLIC_STRIPE_ENRICH_2000_PRICE_ID ?? ''
+  const enrich5000PriceId = process.env.NEXT_PUBLIC_STRIPE_ENRICH_5000_PRICE_ID ?? ''
+
+  // Current PAYG balance for display.
+  const { data: org } = await supabase
+    .from('organizations')
+    .select('enrichment_credit_balance')
+    .eq('id', mockOrgId)
+    .maybeSingle()
+  const enrichBalance = (org as { enrichment_credit_balance?: number } | null)?.enrichment_credit_balance ?? 0
 
   return (
     <div className="mx-auto max-w-6xl px-4 py-8 sm:px-6 lg:px-8">
@@ -63,7 +77,7 @@ export default async function BillingPage() {
                 <span className="text-4xl font-extrabold text-foreground">$49</span>
                 <span className="text-base font-medium text-muted-foreground">/mo</span>
               </p>
-              <form action={createCheckoutSession.bind(null, 'price_pro_id', mockOrgId)}>
+              <form action={createCheckoutSession.bind(null, proPriceId, mockOrgId)}>
                 <button type="submit" className="mt-8 block w-full bg-primary border border-transparent rounded-md py-2 text-sm font-semibold text-primary-foreground text-center hover:bg-primary/90 transition">
                   Subscribe to Pro
                 </button>
@@ -90,7 +104,7 @@ export default async function BillingPage() {
         <div className="max-w-3xl mx-auto bg-background rounded-lg border border-border p-6 shadow-sm">
           <h2 className="text-xl font-bold mb-4">Your Subscription</h2>
           <p className="text-muted-foreground mb-6">You are currently subscribed to the Pro plan.</p>
-          
+
           <form action={createBillingPortalSession.bind(null, mockCustomerId)}>
             <button type="submit" className="bg-primary text-primary-foreground px-4 py-2 rounded-md font-medium hover:bg-primary/90 transition">
               Manage Billing & Invoices
@@ -98,6 +112,110 @@ export default async function BillingPage() {
           </form>
         </div>
       )}
+
+      {/* LinkedIn Enrichment Credit Top-ups */}
+      <div className="mt-16">
+        <div className="sm:flex sm:flex-col sm:align-center mb-8">
+          <h2 className="text-3xl font-extrabold text-foreground sm:text-center">LinkedIn Data Enrichment</h2>
+          <p className="mt-4 text-base text-muted-foreground sm:text-center max-w-2xl mx-auto">
+            Enrich your scraped Google Maps leads with LinkedIn data — company details,
+            employee lists, and individual profiles. Pay only for what you successfully enrich.
+          </p>
+          <p className="mt-2 text-sm text-muted-foreground sm:text-center">
+            Current PAYG balance: <span className="font-semibold text-foreground">{enrichBalance.toLocaleString()} credits</span>
+          </p>
+        </div>
+
+        {/* Credit cost reference */}
+        <div className="max-w-2xl mx-auto mb-8 bg-muted/30 border border-border rounded-lg p-4 text-sm text-muted-foreground grid grid-cols-3 gap-4 text-center">
+          <div><div className="font-medium text-foreground text-lg">1 credit</div><div>Company details</div></div>
+          <div><div className="font-medium text-foreground text-lg">2 credits</div><div>Company employees</div></div>
+          <div><div className="font-medium text-foreground text-lg">4 credits</div><div>Profile scraper</div></div>
+        </div>
+
+        <div className="space-y-4 sm:space-y-0 sm:grid sm:grid-cols-3 sm:gap-6 lg:max-w-4xl lg:mx-auto">
+
+          {/* 500 credits */}
+          <div className="border border-border rounded-lg shadow-sm divide-y divide-border bg-background">
+            <div className="p-6">
+              <h3 className="text-lg font-medium text-foreground">Starter Pack</h3>
+              <p className="mt-2 text-sm text-muted-foreground">Good for testing enrichment on a campaign.</p>
+              <p className="mt-6">
+                <span className="text-3xl font-extrabold text-foreground">$8</span>
+                <span className="text-sm text-muted-foreground"> one-time</span>
+              </p>
+              <p className="text-sm text-muted-foreground mt-1">500 enrichment credits</p>
+              {enrich500PriceId ? (
+                <form action={createEnrichmentTopupCheckout.bind(null, enrich500PriceId, mockOrgId)}>
+                  <button type="submit" className="mt-6 block w-full bg-primary border border-transparent rounded-md py-2 text-sm font-semibold text-primary-foreground text-center hover:bg-primary/90 transition">
+                    Buy 500 credits
+                  </button>
+                </form>
+              ) : (
+                <button disabled className="mt-6 block w-full bg-muted rounded-md py-2 text-sm font-semibold text-muted-foreground text-center cursor-not-allowed">
+                  Coming soon
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* 2000 credits */}
+          <div className="border border-primary rounded-lg shadow-md divide-y divide-border bg-background relative">
+            <div className="absolute top-0 right-0 bg-primary text-primary-foreground px-3 py-1 rounded-bl-lg rounded-tr-lg text-xs font-bold uppercase tracking-wider">
+              Best Value
+            </div>
+            <div className="p-6">
+              <h3 className="text-lg font-medium text-foreground">Growth Pack</h3>
+              <p className="mt-2 text-sm text-muted-foreground">Enrich a full campaign at scale.</p>
+              <p className="mt-6">
+                <span className="text-3xl font-extrabold text-foreground">$28</span>
+                <span className="text-sm text-muted-foreground"> one-time</span>
+              </p>
+              <p className="text-sm text-muted-foreground mt-1">2,000 enrichment credits</p>
+              {enrich2000PriceId ? (
+                <form action={createEnrichmentTopupCheckout.bind(null, enrich2000PriceId, mockOrgId)}>
+                  <button type="submit" className="mt-6 block w-full bg-primary border border-transparent rounded-md py-2 text-sm font-semibold text-primary-foreground text-center hover:bg-primary/90 transition">
+                    Buy 2,000 credits
+                  </button>
+                </form>
+              ) : (
+                <button disabled className="mt-6 block w-full bg-muted rounded-md py-2 text-sm font-semibold text-muted-foreground text-center cursor-not-allowed">
+                  Coming soon
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* 5000 credits */}
+          <div className="border border-border rounded-lg shadow-sm divide-y divide-border bg-background">
+            <div className="p-6">
+              <h3 className="text-lg font-medium text-foreground">Agency Pack</h3>
+              <p className="mt-2 text-sm text-muted-foreground">High-volume enrichment for agencies.</p>
+              <p className="mt-6">
+                <span className="text-3xl font-extrabold text-foreground">$60</span>
+                <span className="text-sm text-muted-foreground"> one-time</span>
+              </p>
+              <p className="text-sm text-muted-foreground mt-1">5,000 enrichment credits</p>
+              {enrich5000PriceId ? (
+                <form action={createEnrichmentTopupCheckout.bind(null, enrich5000PriceId, mockOrgId)}>
+                  <button type="submit" className="mt-6 block w-full bg-primary border border-transparent rounded-md py-2 text-sm font-semibold text-primary-foreground text-center hover:bg-primary/90 transition">
+                    Buy 5,000 credits
+                  </button>
+                </form>
+              ) : (
+                <button disabled className="mt-6 block w-full bg-muted rounded-md py-2 text-sm font-semibold text-muted-foreground text-center cursor-not-allowed">
+                  Coming soon
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+
+        <p className="mt-6 text-xs text-muted-foreground text-center">
+          Credits are non-expiring and charged only on successful enrichment. 1 credit ≈ $0.012–0.016 depending on pack.
+          Powered by <a href="https://apify.com" target="_blank" rel="noopener noreferrer" className="underline">Apify</a>.
+        </p>
+      </div>
     </div>
   )
 }

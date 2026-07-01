@@ -28,16 +28,13 @@ export async function POST(req: Request) {
     switch (event.type) {
       case 'checkout.session.completed': {
         const session = event.data.object as Stripe.Checkout.Session
-        
+
         if (session.mode === 'subscription') {
-          // Handle subscription creation
-          // E.g., insert into public.subscriptions
           const subscriptionId = session.subscription as string;
           const customerId = session.customer as string;
-          const orgId = session.client_reference_id; // Passed during checkout session creation
-          
+          const orgId = session.client_reference_id;
+
           if (orgId) {
-            // Retrieve subscription to get period dates and status
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             const subscription = await stripe.subscriptions.retrieve(subscriptionId) as any;
 
@@ -48,11 +45,41 @@ export async function POST(req: Request) {
               current_period_end: new Date(subscription.current_period_end * 1000).toISOString(),
               cancel_at_period_end: subscription.cancel_at_period_end
             });
-            
-            // Also update the org with customer ID
+
             await supabase.from('organizations').update({
               stripe_customer_id: customerId
             }).eq('id', orgId);
+          }
+        }
+
+        if (session.mode === 'payment') {
+          // One-time PAYG enrichment credit top-up.
+          const orgId = session.client_reference_id;
+          const priceId = session.metadata?.price_id;
+
+          if (orgId && priceId) {
+            // Map Stripe price ID → credit amount to grant.
+            // Add entries here as you create top-up products in Stripe.
+            const TOPUP_CREDITS: Record<string, number> = {
+              [process.env.NEXT_PUBLIC_STRIPE_ENRICH_500_PRICE_ID || '']: 500,
+              [process.env.NEXT_PUBLIC_STRIPE_ENRICH_2000_PRICE_ID || '']: 2000,
+              [process.env.NEXT_PUBLIC_STRIPE_ENRICH_5000_PRICE_ID || '']: 5000,
+            };
+
+            const creditsToAdd = TOPUP_CREDITS[priceId] ?? 0;
+            if (creditsToAdd > 0) {
+              const { data: org } = await supabase
+                .from('organizations')
+                .select('enrichment_credit_balance')
+                .eq('id', orgId)
+                .single();
+
+              const current = (org?.enrichment_credit_balance as number | null) ?? 0;
+              await supabase
+                .from('organizations')
+                .update({ enrichment_credit_balance: current + creditsToAdd })
+                .eq('id', orgId);
+            }
           }
         }
         break
@@ -67,6 +94,10 @@ export async function POST(req: Request) {
           current_period_end: new Date(subscription.current_period_end * 1000).toISOString(),
           cancel_at_period_end: subscription.cancel_at_period_end
         }).eq('stripe_sub_id', subscription.id)
+
+        // When the billing period rolls over, a new usage_tracking row is naturally
+        // created on the next enrichment. No explicit reset needed since the meter
+        // is keyed on (organization_id, billing_period_start).
         break
       }
 

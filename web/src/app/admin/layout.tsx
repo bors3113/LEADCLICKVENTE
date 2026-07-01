@@ -15,9 +15,16 @@ export default async function AdminLayout({
     redirect('/login');
   }
 
-  // In a real app, verify user is an admin via a users or roles table
-  // const { data: role } = await supabase.from('users').select('role').eq('id', user.id).single();
-  // if (role?.role !== 'super_admin') redirect('/dashboard');
+  // Check admin role. Fallback to env-based email list when 'profiles' table has no role column.
+  const adminEmails = (process.env.ADMIN_EMAILS || '').split(',').map(e => e.trim()).filter(Boolean);
+  const isAdminByEmail = adminEmails.length > 0 && adminEmails.includes(user.email ?? '');
+
+  if (!isAdminByEmail) {
+    const { data: profile } = await supabase.from('profiles').select('role').eq('id', user.id).single();
+    if ((profile as { role?: string } | null)?.role !== 'super_admin') {
+      redirect('/dashboard');
+    }
+  }
 
   return (
     <div className="flex h-screen bg-slate-50">

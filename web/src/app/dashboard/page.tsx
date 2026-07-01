@@ -1,15 +1,64 @@
 import { createClient } from '@/utils/supabase/server';
-import { Activity, Users, Database } from 'lucide-react';
+import { Activity, Database, CreditCard, Sparkles } from 'lucide-react';
 import { JobRealtimeTable } from '@/components/JobRealtimeTable';
 
 export default async function DashboardOverview() {
   const supabase = await createClient();
-  
-  // Fetch some stats from the database (mocked for UI design right now)
+  const { data: { user } } = await supabase.auth.getUser();
+
+  const [
+    { count: totalExtractions },
+    { count: activeJobs },
+    { data: profile },
+    { data: membership },
+    { count: totalEnrichments },
+  ] = await Promise.all([
+    supabase.from('extracted_records').select('*', { count: 'exact', head: true }),
+    supabase.from('scraping_jobs').select('*', { count: 'exact', head: true }).in('status', ['queued', 'running']),
+    supabase.from('profiles').select('credits').eq('id', user?.id ?? '').single(),
+    supabase.from('memberships').select('organization_id').eq('user_id', user?.id ?? '').single(),
+    supabase.from('enrichment_jobs').select('*', { count: 'exact', head: true }).eq('status', 'completed'),
+  ]);
+
+  const credits = (profile as { credits?: number } | null)?.credits ?? 0;
+  const orgId = (membership as { organization_id?: string } | null)?.organization_id ?? '';
+
+  // Enrichment PAYG balance
+  let enrichBalance = 0;
+  if (orgId) {
+    const { data: org } = await supabase
+      .from('organizations')
+      .select('enrichment_credit_balance')
+      .eq('id', orgId)
+      .single();
+    enrichBalance = (org as { enrichment_credit_balance?: number } | null)?.enrichment_credit_balance ?? 0;
+  }
+
   const stats = [
-    { name: 'Total Extractions', stat: '12,450', icon: Database, change: '+12%', changeType: 'positive' },
-    { name: 'Active Jobs', stat: '3', icon: Activity, change: 'Running', changeType: 'neutral' },
-    { name: 'Credits Remaining', stat: '8,550', icon: Users, change: '10,000 total', changeType: 'neutral' },
+    {
+      name: 'Total Extractions',
+      stat: (totalExtractions ?? 0).toLocaleString(),
+      icon: Database,
+      sub: 'all time',
+    },
+    {
+      name: 'Active Jobs',
+      stat: String(activeJobs ?? 0),
+      icon: Activity,
+      sub: 'queued or running',
+    },
+    {
+      name: 'Credits Remaining',
+      stat: credits.toLocaleString(),
+      icon: CreditCard,
+      sub: 'this billing period',
+    },
+    {
+      name: 'Enrichment Credits',
+      stat: enrichBalance.toLocaleString(),
+      icon: Sparkles,
+      sub: 'LinkedIn PAYG balance',
+    },
   ];
 
   return (
@@ -21,7 +70,7 @@ export default async function DashboardOverview() {
         </p>
       </div>
 
-      <dl className="mt-5 grid grid-cols-1 gap-5 sm:grid-cols-3">
+      <dl className="mt-5 grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4">
         {stats.map((item) => (
           <div
             key={item.name}
@@ -35,13 +84,7 @@ export default async function DashboardOverview() {
             </dt>
             <dd className="ml-16 flex items-baseline pb-6 sm:pb-7">
               <p className="text-2xl font-semibold text-foreground">{item.stat}</p>
-              <p
-                className={`ml-2 flex items-baseline text-sm font-semibold ${
-                  item.changeType === 'positive' ? 'text-green-600' : 'text-muted-foreground'
-                }`}
-              >
-                {item.change}
-              </p>
+              <p className="ml-2 flex items-baseline text-sm text-muted-foreground">{item.sub}</p>
             </dd>
           </div>
         ))}
