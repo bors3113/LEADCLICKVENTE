@@ -21,6 +21,12 @@ module.exports = {
             'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.110 Safari/537.36',
     },
 
+    cloudflare: {
+        accountId: process.env.CF_ACCOUNT_ID,
+        browserToken: process.env.CF_BROWSER_TOKEN,
+        useCloudflareBrowser: process.env.USE_CLOUDFLARE_BROWSER === 'true',
+    },
+
     scraper: {
         navigationTimeoutMs: parseInt(process.env.NAV_TIMEOUT_MS, 10) || 30000,
         httpTimeoutMs: parseInt(process.env.HTTP_TIMEOUT_MS, 10) || 30000,

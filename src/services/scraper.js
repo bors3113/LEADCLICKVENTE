@@ -1,5 +1,6 @@
 const config = require('../config');
 const puppeteer = require('puppeteer');
+const { launchCloudflareBrowser } = require('./cloudflare-browser');
 const fs = require('fs');
 const fsp = require('fs/promises');
 const { Cluster } = require('puppeteer-cluster');
@@ -33,6 +34,30 @@ const httpClient = axios.create({
 // Remove the direct execution code (runFullScrape() call)
 function formatSearchQuery(query) {
     return query.trim().replace(/\s+/g, '+');
+  }
+
+  // Unwrap Google's redirect wrapper so the Excel "website" column shows the
+  // real destination, not "https://www.google.com/url?q=...". Google uses this
+  // wrapper on localized/consent pages: the real URL sits in the `q` (or `url`)
+  // query param, URL-encoded. Returns the cleaned URL, or the input unchanged
+  // if it isn't a Google redirect.
+  function cleanWebsiteUrl(url) {
+      if (!url || url === 'N/A') return url;
+      try {
+          const parsed = new URL(url);
+          const isGoogleRedirect =
+              /(^|\.)google\.[a-z.]+$/i.test(parsed.hostname) &&
+              (parsed.pathname === '/url' || parsed.pathname.startsWith('/url'));
+          if (isGoogleRedirect) {
+              const real = parsed.searchParams.get('q') || parsed.searchParams.get('url');
+              if (real) return real;
+          }
+          return url;
+      } catch {
+          // Not a parseable URL — try a regex fallback for the ?q= param.
+          const m = url.match(/[?&](?:q|url)=([^&]+)/);
+          return m ? decodeURIComponent(m[1]) : url;
+      }
   }
 
   // Read the current map viewport center (lat/lng/zoom) from the page URL.
@@ -95,6 +120,69 @@ function formatSearchQuery(query) {
       return indicators;
   }
 
+  // Detect and dismiss Google's cookie-consent interstitial. Non-US Cloudflare
+  // egress IPs trigger a "Before you go to Google Maps" wall that hijacks the
+  // DOM so every Maps selector fails. We look for the wall (by title/host or a
+  // consent form), click a consent button (accept preferred, reject as
+  // fallback), then re-navigate to the original search URL. Returns true if a
+  // consent page was handled.
+  async function handleConsentPage(page, searchUrl) {
+      try {
+          const url = page.url();
+          const title = (await page.title()) || '';
+          const looksLikeConsent =
+              url.includes('consent.google.') ||
+              url.includes('/consent') ||
+              /before you go|antes de ir|bevor sie|avant de continuer|prima di|voordat je/i.test(title);
+
+          if (!looksLikeConsent) {
+              // Also check for an in-page consent form even if the title looks normal.
+              const hasForm = await page.evaluate(() =>
+                  !!document.querySelector('form[action*="consent"], button[aria-label*="Accept"], button[aria-label*="Aceptar"], #L2AGLb')
+              );
+              if (!hasForm) return false;
+          }
+
+          console.log('Consent interstitial detected. Attempting to dismiss...');
+
+          // Try common "accept all" buttons across locales, then "reject all".
+          const clicked = await page.evaluate(() => {
+              const trySelectors = [
+                  '#L2AGLb',                                  // "Accept all" (id used on consent.google.com)
+                  'button[aria-label*="Accept all"]',
+                  'button[aria-label*="Aceptar todo"]',
+                  'form[action*="consent"] button',
+                  'button[jsname="b3VHJd"]',                  // reject-all fallback
+              ];
+              for (const sel of trySelectors) {
+                  const el = document.querySelector(sel);
+                  if (el) { el.click(); return sel; }
+              }
+              // Last resort: click first button inside a consent form.
+              const formBtn = document.querySelector('form[action*="consent"] button, form[action*="save"] button');
+              if (formBtn) { formBtn.click(); return 'form-button'; }
+              return null;
+          });
+
+          if (clicked) {
+              console.log(`Clicked consent button: ${clicked}`);
+          } else {
+              console.log('No consent button found to click.');
+          }
+
+          // Wait for navigation/settle, then force back to the search URL so we
+          // land on Maps regardless of where the consent redirect sent us.
+          await page.evaluate(() => new Promise(r => setTimeout(r, 1500)));
+          await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+          await page.evaluate(() => new Promise(r => setTimeout(r, 2500)));
+          console.log(`Re-navigated after consent. New title: ${await page.title().catch(() => '?')}`);
+          return true;
+      } catch (err) {
+          console.log(`handleConsentPage error (non-fatal): ${err.message}`);
+          return false;
+      }
+  }
+
   async function scrapeCurrentView(page, limit = null) {
     const results = [];
     const observedNames = new Set();
@@ -111,13 +199,6 @@ function formatSearchQuery(query) {
     }
     
     const scrollAndCollect = async () => {
-        // Set cookie once for the session
-        await page.setCookie({
-            name: 'CONSENT',
-            value: 'YES+',
-            domain: '.google.com'
-        });
-        
         // Combined evaluation to reduce round trips to the browser
         return await page.evaluate(async () => {
             // Try multiple selectors for the results container
@@ -409,11 +490,9 @@ function formatSearchQuery(query) {
     }
 
     // Process any remaining items in the queue if there are any and we haven't been asked to stop
-    if (processingQueue.length > 0 && !isStopRequestedGlobal && !limitReached) {
+    if (processingQueue.length > 0 && !isStopRequestedGlobal) {
         console.log(`Processing remaining ${processingQueue.length} items in queue...`);
         await processBatch(processingQueue);
-    } else if (limitReached) {
-        console.log('Limit reached, skipping processing of remaining queue items.');
     }
 
     // Check for duplicates and ensure we have the right number of unique items
@@ -662,7 +741,7 @@ async function navigateTiles(page, query, startCenter, limit = null, ringCount =
             break;
         }
 
-        const tileUrl = `https://www.google.com/maps/search/${formattedQuery}/@${center.lat},${center.lng},${center.zoom}z`;
+        const tileUrl = `https://www.google.com/maps/search/${formattedQuery}/@${center.lat},${center.lng},${center.zoom}z?hl=en&gl=US`;
         console.log(`Navigating tile @${center.lat.toFixed(6)},${center.lng.toFixed(6)},${center.zoom}z`);
 
         try {
@@ -741,7 +820,13 @@ async function scrapeInitialData(searchQuery, limit = null, format = 'excel', ti
     
     console.log(`Real-time export initialized: ${realTimeExporter.getFilePath()}`);
     
-    let browser = await puppeteer.launch(config.browser);
+    let browser;
+    if (config.cloudflare.useCloudflareBrowser) {
+        console.log('Launching remote Cloudflare browser...');
+        browser = await launchCloudflareBrowser();
+    } else {
+        browser = await puppeteer.launch(config.browser);
+    }
     
     const page = await browser.newPage();
     
@@ -758,9 +843,31 @@ async function scrapeInitialData(searchQuery, limit = null, format = 'excel', ti
     
     // Set a realistic user agent
     await page.setUserAgent(config.browser.userAgent);
-    
+
+    // Must be set before the first navigation — Cloudflare edge IPs are non-US
+    // so Google serves the GDPR consent wall without these cookies.
+    // Google migrated from the old CONSENT cookie to SOCS; set both. The SOCS
+    // value below records "consent accepted", which suppresses the interstitial.
+    await page.setCookie(
+        {
+            name: 'SOCS',
+            value: 'CAISHAgBEhJnd3NfMjAyMzA4MTAtMF9SQzIaAmVuIAEaBgiA_LyaBg',
+            domain: '.google.com',
+            path: '/',
+        },
+        {
+            name: 'CONSENT',
+            value: 'YES+cb.20210328-17-p0.en+FX+910',
+            domain: '.google.com',
+            path: '/',
+        }
+    );
+
+    // Force English + US locale so the served UI matches our selectors (e.g.
+    // "Liste"/"List" labels). Without gl=US the non-US edge IP yields a
+    // localized (Spanish here) consent page and layout.
     const formattedQuery = formatSearchQuery(searchQuery);
-    const searchUrl = `https://www.google.com/maps/search/${formattedQuery}/`;
+    const searchUrl = `https://www.google.com/maps/search/${formattedQuery}/?hl=en&gl=US`;
     
     console.log(`Searching: ${searchUrl}`);
     
@@ -772,7 +879,7 @@ async function scrapeInitialData(searchQuery, limit = null, format = 'excel', ti
         });
         
         console.log('Page loaded successfully');
-        
+
         // Check if stop was requested
         if (isStopRequestedGlobal) {
             console.log('Stop requested. Terminating scrape.');
@@ -786,7 +893,12 @@ async function scrapeInitialData(searchQuery, limit = null, format = 'excel', ti
         } catch (error) {
             console.log('Error during page wait:', error.message);
         }
-        
+
+        // Fallback: if the cookies didn't suppress the consent interstitial
+        // (Google shows "Before you go to Google Maps" / "Antes de ir a..."),
+        // click the accept/reject button and re-navigate to the search URL.
+        await handleConsentPage(page, searchUrl);
+
         // Check if page loaded properly
         const pageTitle = await page.title();
         console.log(`Page title: ${pageTitle}`);
@@ -903,8 +1015,11 @@ async function scrapeInitialData(searchQuery, limit = null, format = 'excel', ti
             }
         }
         
-        // Set the estimated total to be scraped
-        totalItemsToScrape = results.length;
+        // Set the total: prefer the explicit limit (already seeded in scrapeCurrentView),
+        // otherwise fall back to the initial result count as an estimate.
+        if (totalItemsToScrape === 0) {
+            totalItemsToScrape = limit && limit > 0 ? limit : results.length;
+        }
 
         // Check if stop was requested after initial scrolling
         if (isStopRequestedGlobal) {
@@ -973,6 +1088,12 @@ async function scrapeInitialData(searchQuery, limit = null, format = 'excel', ti
         }
         
         console.log(`Total unique locations found: ${combinedResults.length} (requested limit: ${limit || 'none'})`);
+
+        // Sync the live counter to the authoritative final count before marking
+        // the scrape inactive. This prevents any in-flight status poll from
+        // reading a stale intermediate value (e.g. 40 instead of 50) in the
+        // window between the last batch completing and the response being sent.
+        scrapedItemsCount = combinedResults.length;
 
         return combinedResults;
     } catch (error) {
@@ -1082,6 +1203,9 @@ async function scrapeGoogleMapsData(page) {
             }
         }
 
+        // Unwrap any Google redirect wrapper so the website column is clean.
+        data.website = cleanWebsiteUrl(data.website);
+
         return data;
     } catch (error) {
         console.error("Error scraping detailed data:", error);
@@ -1098,6 +1222,98 @@ async function scrapeGoogleMapsData(page) {
 }
 
 
+  // --- Contact-info extraction helpers -------------------------------------
+  // Asset/file extensions that must never be treated as an email TLD. This is
+  // what catches retina image names like "logo@2x.png" being scraped as emails.
+  const NON_EMAIL_TLDS = new Set([
+      'png','jpg','jpeg','gif','svg','webp','bmp','ico','tif','tiff','avif','heic',
+      'css','js','mjs','json','xml','map','mp4','webm','mov','avi','mp3','wav',
+      'woff','woff2','ttf','otf','eot','pdf','zip','gz'
+  ]);
+
+  // Placeholder / library / telemetry domains that appear in markup but are
+  // never a real business email.
+  const BLOCKED_EMAIL_DOMAINS = new Set([
+      'example.com','example.org','example.net','domain.com','yourdomain.com',
+      'email.com','sentry.io','wixpress.com','schema.org','w3.org'
+  ]);
+
+  // Path first-segments that are navigation/sharing/content, never a profile.
+  const SOCIAL_BLOCKLIST = new Set([
+      'sharer','share','share.php','intent','plugins','tr','dialog','l.php',
+      'home','login','signup','help','about','privacy','policies','tos','legal',
+      'hashtag','search','explore','watch','events','marketplace','groups',
+      'stories','reel','reels','p','tv','embed','oembed','status','i','messages',
+      'notifications','settings','compose','story','media','photo','photos','videos','posts'
+  ]);
+
+  // Validate and clean candidate email strings; drops asset names and placeholders.
+  function normalizeEmails(candidates) {
+      const out = new Set();
+      for (const raw of candidates || []) {
+          if (!raw) continue;
+          const email = String(raw).trim().toLowerCase()
+              .replace(/^mailto:/, '')
+              .replace(/[?#].*$/, '')      // drop ?subject=... / #frag
+              .replace(/^[^a-z0-9]+/, '')  // strip leading junk
+              .replace(/[^a-z0-9]+$/, ''); // strip trailing junk (>, quotes, ., ))
+          const m = email.match(/^([a-z0-9._%+-]+)@([a-z0-9.-]+)\.([a-z]{2,24})$/);
+          if (!m) continue;
+          const tld = m[3];
+          if (NON_EMAIL_TLDS.has(tld)) continue;          // logo@2x.png, hero@3x.webp, ...
+          const fullDomain = `${m[2]}.${tld}`;
+          if (BLOCKED_EMAIL_DOMAINS.has(fullDomain)) continue;
+          if (email.length > 100) continue;
+          out.add(email);
+      }
+      return [...out].slice(0, 25);
+  }
+
+  // Normalize/filter candidate URLs into profile links per platform.
+  function normalizeSocialLinks(urls) {
+      const acc = { facebook: new Set(), instagram: new Set(), twitter: new Set(), linkedin: new Set() };
+      for (let raw of urls || []) {
+          if (!raw) continue;
+          let u = String(raw).trim().replace(/&amp;/gi, '&');
+          if (u.startsWith('//')) u = 'https:' + u;
+          if (!/^https?:\/\//i.test(u)) {
+              if (/^(?:www\.)?(?:facebook|instagram|twitter|x|linkedin)\.com/i.test(u)) u = 'https://' + u;
+              else continue;
+          }
+          let parsed;
+          try { parsed = new URL(u); } catch { continue; }
+          const host = parsed.hostname.toLowerCase();
+          const segs = parsed.pathname.split('/').filter(Boolean);
+          const seg0 = (segs[0] || '').toLowerCase();
+
+          if (/(?:^|\.)linkedin\.com$/.test(host)) {
+              if (['company','in','school','showcase'].includes(seg0) && segs[1]) {
+                  acc.linkedin.add(`https://www.linkedin.com/${seg0}/${segs[1]}`);
+              }
+          } else if (/(?:^|\.)facebook\.com$/.test(host)) {
+              if (parsed.pathname.toLowerCase().startsWith('/profile.php') && parsed.searchParams.get('id')) {
+                  acc.facebook.add(`https://www.facebook.com/profile.php?id=${parsed.searchParams.get('id')}`);
+              } else if (seg0 && !SOCIAL_BLOCKLIST.has(seg0)) {
+                  acc.facebook.add(`https://www.facebook.com/${segs[0]}`);
+              }
+          } else if (/(?:^|\.)instagram\.com$/.test(host)) {
+              if (seg0 && !SOCIAL_BLOCKLIST.has(seg0)) {
+                  acc.instagram.add(`https://www.instagram.com/${segs[0]}`);
+              }
+          } else if (/(?:^|\.)(?:twitter|x)\.com$/.test(host)) {
+              if (seg0 && !SOCIAL_BLOCKLIST.has(seg0)) {
+                  acc.twitter.add(`https://twitter.com/${segs[0]}`);
+              }
+          }
+      }
+      return {
+          facebook: [...acc.facebook].slice(0, 10),
+          instagram: [...acc.instagram].slice(0, 10),
+          twitter: [...acc.twitter].slice(0, 10),
+          linkedin: [...acc.linkedin].slice(0, 10),
+      };
+  }
+
     async function extractContactInfo(websiteUrl) {
         try {
             console.log(`Extracting contact info from: ${websiteUrl}`);
@@ -1105,22 +1321,32 @@ async function scrapeGoogleMapsData(page) {
             const response = await httpClient.get(websiteUrl);
             const html = response.data;
             
-            // Use regex patterns (same as before)
-            const emailRegex = /([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z0-9-]{2,})/gi;
-            const socialMediaPatterns = {
-                facebook: /(?:https?:\/\/)?(?:www\.)?facebook\.com\/[a-zA-Z0-9._%+-]+/gi,
-                instagram: /(?:https?:\/\/)?(?:www\.)?instagram\.com\/[^/?&#]+/gi,
-                twitter: /(?:https?:\/\/)?(?:www\.)?twitter\.com\/[^/?&#]+/gi,
-                linkedin: /(?:https?:\/\/)?(?:www\.)?linkedin\.com\/(?:company|in)\/[^/?&#]+/gi
-            };
-            
-            const emails = [...new Set(html.match(emailRegex) || [])];
-            const socialMedia = {};
-            
-            for (const [platform, regex] of Object.entries(socialMediaPatterns)) {
-                socialMedia[platform] = [...new Set(html.match(regex) || [])];
-            }
-            
+            // Robustly extract emails + social links. Parse the DOM with cheerio so we
+            // read real mailto:/href values and visible text instead of raw HTML —
+            // this stops asset names like "logo@2x.png" from being scraped as emails.
+            const $ = cheerio.load(html);
+            const hrefs = $('a[href]').map((_, el) => $(el).attr('href')).get();
+            const mailtos = hrefs
+                .filter(h => /^mailto:/i.test(h))
+                .map(h => h.replace(/^mailto:/i, ''));
+            const bodyText = $('body').text() || '';
+
+            // Emails: only from mailto: links and visible text (never raw markup),
+            // then validated/filtered by normalizeEmails().
+            const emailCandidates = [
+                ...mailtos,
+                ...(bodyText.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,24}/g) || []),
+            ];
+            const emails = normalizeEmails(emailCandidates);
+
+            // Social: anchor hrefs plus any URLs in markup, normalized/filtered so
+            // tracking/share/plugin links are dropped and only profiles remain.
+            const urlCandidates = [
+                ...hrefs,
+                ...(html.match(/https?:\/\/[^\s"'<>()]+/gi) || []),
+            ];
+            const socialMedia = normalizeSocialLinks(urlCandidates);
+
             return { emails, socialMedia };
         } catch (error) {
             console.error(`Error extracting contact info from ${websiteUrl}:`, error.message);
@@ -1648,6 +1874,9 @@ module.exports = {
     processJsonFile,
     processJsonFileWithContactInfo,
     extractContactInfo,
+    normalizeEmails,
+    normalizeSocialLinks,
+    cleanWebsiteUrl,
     scrapeGoogleMapsData,
     formatSearchQuery,
     interactWithMap,

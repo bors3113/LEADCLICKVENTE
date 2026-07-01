@@ -1,0 +1,22 @@
+name = "scraper-worker"
+main = "src/index.ts"
+compatibility_date = "2024-09-23"
+
+# Binding to the Browser Rendering API
+browser = { binding = "MYBROWSER" }
+
+# Queues configuration
+# [[queues.producers]]
+# binding = "SCRAPING_QUEUE"
+# queue = "scraping-jobs-queue"
+
+# [[queues.consumers]]
+# queue = "scraping-jobs-queue"
+# max_batch_size = 1
+# max_batch_timeout = 10
+# max_retries = 3
+# dead_letter_queue = "scraping-jobs-dlq"
+
+[vars]
+# SUPABASE_URL = "your-supabase-url"
+# SUPABASE_SERVICE_KEY = "your-supabase-service-key"

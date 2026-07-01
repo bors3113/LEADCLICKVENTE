@@ -843,11 +843,12 @@
                     msg += `Extracted <strong style="color:var(--accent)">${data.resultsCount || data.totalResultsCount}</strong> records`;
                 }
 
+                const finalCount = data.totalResultsCount ?? data.resultsCount ?? 0;
+
                 if (data.limit && data.limit !== 'No limit') {
-                    msg += `<br>Limit: ${data.limit} per query`;
+                    msg += `<br>Limit: ${finalCount} per query`;
                 }
 
-                // Fix #1: warn user when fewer results were returned than requested
                 if (data.areaExhausted && data.requestedLimit && finalCount < data.requestedLimit) {
                     msg += `<br><br><span style="color:var(--yellow)">⚠ Requested ${data.requestedLimit} records but only ${finalCount} exist in this area — Google Maps has no more results for this search.</span>`;
                 }
@@ -866,9 +867,6 @@
 
                 if (statusPollInterval) { clearInterval(statusPollInterval); statusPollInterval = null; }
                 setScanning(false);
-                // Set final counts directly from response — do NOT call updateScrapingProgress()
-                // which would overwrite with stale server-side numbers
-                const finalCount = data.totalResultsCount ?? data.resultsCount ?? 0;
                 businessesCount.textContent = finalCount;
                 metricsCard.classList.add('visible');
 
