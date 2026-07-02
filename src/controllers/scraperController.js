@@ -331,9 +331,12 @@ const scraperController = {
     async enrichFile(req, res) {
         const enrichSchema = z.object({
             filename: z.string().min(1).max(255).regex(/^[\w\-. ]+\.(xlsx|csv)$/i, 'Must be an .xlsx or .csv file'),
-            types: z.array(z.enum(['company', 'employees', 'profile'])).min(1),
+            types: z.array(z.enum(['employees', 'profile'])).min(1),
             outputFormat: z.enum(['excel', 'csv']).optional(),
             organizationId: z.string().uuid().optional(),
+            // Cascade scope for the 'profile' type. Defaults to a capped run.
+            scope: z.enum(['all', 'capped', 'decision-makers']).optional(),
+            profileCap: z.coerce.number().int().min(1).max(1000).optional(),
         });
 
         const parsed = enrichSchema.safeParse(req.body);
@@ -342,6 +345,57 @@ const scraperController = {
         }
 
         const { filename, types, organizationId } = parsed.data;
+        const scope = parsed.data.scope || 'capped';
+        const profileCap = parsed.data.profileCap;
+        const isCascade = types.includes('profile');
+
+        // Read the org's available enrichment credits (PAYG balance). The
+        // enrichment_credit_balance column lives in the Supabase SQL migration but
+        // is not in prisma/schema.prisma, so we read it with raw SQL to avoid
+        // depending on the generated client being regenerated. (There is no
+        // subscription->plan link in the schema, so bundled quota isn't resolvable
+        // here; PAYG balance is the enforced source, matching the billing page.)
+        const getAvailableCredits = async () => {
+            if (!organizationId) return null; // no org => billing not enforced
+            const rows = await prisma.$queryRaw`
+                SELECT COALESCE(enrichment_credit_balance, 0) AS payg
+                FROM organizations
+                WHERE id = ${organizationId}::uuid
+                LIMIT 1`;
+            if (!rows || rows.length === 0) return 0;
+            return Number(rows[0].payg) || 0;
+        };
+
+        // Cascade pre-check: run the (cheaper) employees stage to learn the exact
+        // profile count, price the run, and BLOCK before scraping profiles if the
+        // org can't afford it. plannedCascade is reused by the enrich run so the
+        // employees actor isn't called twice.
+        let plannedCascade = null;
+        if (isCascade) {
+            try {
+                plannedCascade = await scraperService.planCascade(filename, { scope, profileCap });
+            } catch (planErr) {
+                return res.status(500).json({ error: planErr.message });
+            }
+
+            const perProfileRate = config.apify.cascadePerProfileByScope[scope]
+                ?? config.apify.cascadePerProfileByScope.all;
+            const estimate =
+                plannedCascade.companyCount * config.apify.cascadeBasePerCompany +
+                plannedCascade.profileCount * perProfileRate;
+
+            const available = await getAvailableCredits();
+            if (available !== null && estimate > available) {
+                return res.status(402).json({
+                    error: 'Insufficient enrichment credits for this cascade.',
+                    required: estimate,
+                    available,
+                    shortfall: estimate - available,
+                    companyCount: plannedCascade.companyCount,
+                    profileCount: plannedCascade.profileCount,
+                });
+            }
+        }
 
         // Create a DB tracking record if an org is provided.
         let jobRecord = null;
@@ -352,6 +406,7 @@ const scraperController = {
                         organization_id: organizationId,
                         source_file: filename,
                         types,
+                        scope: isCascade ? scope : null,
                         status: 'running',
                     },
                 });
@@ -362,15 +417,39 @@ const scraperController = {
         }
 
         try {
-            const { enrichedCount, creditsByType, outputPath, r2Key } = await enrichScrapedFile(filename, types);
+            const { enrichedCount, creditsByType, cascade, outputPath, r2Key } =
+                await enrichScrapedFile(filename, types, { scope, profileCap, plannedCascade });
 
             const outputBasename = path.basename(outputPath);
 
-            // Compute total credits charged (success rows only — already counted inside enrichScrapedFile).
-            const creditsCharged =
+            // Compute total credits charged (success only — counted inside enrichScrapedFile).
+            // Cascade uses flat-base-per-company + per-scraped-profile pricing; the
+            // non-cascade types keep their per-row credit costs.
+            let creditsCharged =
                 (creditsByType.company || 0) * config.apify.creditCost.company +
-                (creditsByType.employees || 0) * config.apify.creditCost.employees +
-                (creditsByType.profile || 0) * config.apify.creditCost.profile;
+                (creditsByType.employees || 0) * config.apify.creditCost.employees;
+            if (cascade) {
+                const perProfileRate = config.apify.cascadePerProfileByScope[cascade.scope]
+                    ?? config.apify.cascadePerProfileByScope.all;
+                creditsCharged +=
+                    cascade.companyCount * config.apify.cascadeBasePerCompany +
+                    cascade.profilesScraped * perProfileRate;
+            } else {
+                creditsCharged += (creditsByType.profile || 0) * config.apify.creditCost.profile;
+            }
+
+            // Deduct the charge from the org's PAYG balance (best-effort, raw SQL —
+            // see getAvailableCredits for why the column isn't via the Prisma model).
+            if (organizationId && creditsCharged > 0) {
+                try {
+                    await prisma.$executeRaw`
+                        UPDATE organizations
+                        SET enrichment_credit_balance = COALESCE(enrichment_credit_balance, 0) - ${creditsCharged}
+                        WHERE id = ${organizationId}::uuid`;
+                } catch (balErr) {
+                    console.error('Failed to decrement enrichment_credit_balance:', balErr);
+                }
+            }
 
             // Persist enrichment_results summary and mark job completed.
             if (jobRecord) {
@@ -409,6 +488,7 @@ const scraperController = {
                 enrichedCount,
                 creditsByType,
                 creditsCharged,
+                cascade: cascade || null,
             });
 
         } catch (error) {

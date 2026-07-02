@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { createClient } from '@/utils/supabase/client';
 import Link from 'next/link';
 import { ArrowUpRight, Download, ChevronLeft, ChevronRight } from 'lucide-react';
@@ -33,7 +33,9 @@ export function JobRealtimeTable() {
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(0);
   const [loading, setLoading] = useState(true);
-  const supabase = createClient();
+  const jobsRef = useRef<Job[]>([]);
+  const realtimeUpRef = useRef(false);
+  const supabase = useMemo(() => createClient(), []);
 
   const fetchJobs = async (currentPage = page) => {
     const from = currentPage * PAGE_SIZE;
@@ -45,7 +47,10 @@ export function JobRealtimeTable() {
       .order('created_at', { ascending: false })
       .range(from, to);
 
-    if (data) setJobs(data);
+    if (data) {
+      setJobs(data);
+      jobsRef.current = data;
+    }
     if (count !== null) setTotal(count);
     setLoading(false);
   };
@@ -58,9 +63,21 @@ export function JobRealtimeTable() {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'scraping_jobs' }, () => {
         fetchJobs(page);
       })
-      .subscribe();
+      .subscribe((status) => {
+        realtimeUpRef.current = status === 'SUBSCRIBED';
+      });
 
-    return () => { supabase.removeChannel(channel); };
+    // Fallback polling: realtime WebSockets can drop silently, so refetch on an
+    // interval whenever the channel is down or a job is still in flight.
+    const interval = setInterval(() => {
+      const hasActive = jobsRef.current.some(j => j.status === 'queued' || j.status === 'running');
+      if (!realtimeUpRef.current || hasActive) fetchJobs(page);
+    }, 5000);
+
+    return () => {
+      supabase.removeChannel(channel);
+      clearInterval(interval);
+    };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [page]);
 

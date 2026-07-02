@@ -2,14 +2,15 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { LayoutDashboard, FolderKanban, Search, Settings, CreditCard, LogOut, Sparkles, FileSpreadsheet } from 'lucide-react';
+import { LayoutDashboard, FolderKanban, Search, Settings, CreditCard, LogOut, Sparkles, FileSpreadsheet, Table, Send } from 'lucide-react';
 import { createClient } from '@/utils/supabase/client';
 import { useRouter } from 'next/navigation';
+import { useRef } from 'react';
 
 export function Sidebar() {
   const pathname = usePathname();
   const router = useRouter();
-  const supabase = createClient();
+  const supabase = useRef(createClient()).current;
 
   const handleSignOut = async () => {
     await supabase.auth.signOut();
@@ -21,7 +22,9 @@ export function Sidebar() {
     { name: 'Projects', href: '/dashboard/projects', icon: FolderKanban },
     { name: 'New Scrape', href: '/dashboard/scrape', icon: Search },
     { name: 'Results', href: '/dashboard/results', icon: FileSpreadsheet },
+    { name: 'Data Editor', href: '/dashboard/editor', icon: Table },
     { name: 'Enrichment', href: '/dashboard/enrich', icon: Sparkles },
+    { name: 'Outreach', href: '/dashboard/outreach', icon: Send },
     { name: 'Billing', href: '/billing', icon: CreditCard },
     { name: 'Settings', href: '/dashboard/settings', icon: Settings },
   ];

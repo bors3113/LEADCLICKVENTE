@@ -543,16 +543,22 @@ model memberships {
 
 /// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
 model organizations {
-  id                 String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  name               String
-  slug               String           @unique
-  stripe_customer_id String?
-  created_at         DateTime?        @default(now()) @db.Timestamptz(6)
-  api_keys           api_keys[]
-  memberships        memberships[]
-  projects           projects[]
-  subscriptions      subscriptions[]
-  usage_tracking     usage_tracking[]
+  id                        String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name                      String
+  slug                      String           @unique
+  stripe_customer_id        String?
+  enrichment_credit_balance Int?             @default(0)
+  created_at                DateTime?        @default(now()) @db.Timestamptz(6)
+  api_keys                  api_keys[]
+  enrichment_jobs           enrichment_jobs[]
+  memberships               memberships[]
+  projects                  projects[]
+  subscriptions             subscriptions[]
+  usage_tracking            usage_tracking[]
+  mailboxes                 mailboxes[]
+  email_messages            email_messages[]
+  email_campaigns           email_campaigns[]
+  unsubscribes              unsubscribes[]
 
   @@schema("public")
 }
@@ -717,11 +723,189 @@ enum one_time_token_type {
   @@schema("auth")
 }
 
+model enrichment_jobs {
+  id                String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organization_id   String        @db.Uuid
+  source_file       String
+  types             String[]      @default([])
+  scope             String?
+  status            job_status?   @default(queued)
+  total_rows        Int?          @default(0)
+  enriched_count    Int?          @default(0)
+  credits_charged   Int?          @default(0)
+  output_file       String?
+  created_at        DateTime?     @default(now()) @db.Timestamptz(6)
+  completed_at      DateTime?     @db.Timestamptz(6)
+  organizations     organizations @relation(fields: [organization_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  enrichment_results enrichment_results[]
+
+  @@schema("public")
+}
+
+model enrichment_results {
+  id            String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  job_id        String           @db.Uuid
+  identifier    String
+  type          String
+  linkedin_data Json?
+  apify_run_id  String?
+  created_at    DateTime?        @default(now()) @db.Timestamptz(6)
+  enrichment_jobs enrichment_jobs @relation(fields: [job_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([job_id, type])
+  @@schema("public")
+}
+
+model waitlist {
+  id         String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  email      String    @unique
+  created_at DateTime? @default(now()) @db.Timestamptz(6)
+
+  @@schema("public")
+}
+
+// A connected sending inbox (Gmail / Outlook). OAuth tokens are stored
+// encrypted at rest (AES-256-GCM); see web/src/lib/email/tokens.ts.
+model mailboxes {
+  id               String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organization_id  String           @db.Uuid
+  user_id          String           @db.Uuid
+  provider         email_provider
+  email            String
+  display_name     String?
+  access_token_enc String?
+  refresh_token_enc String?
+  token_expires_at DateTime?        @db.Timestamptz(6)
+  scopes           String[]         @default([])
+  status           mailbox_status?  @default(active)
+  daily_send_limit Int?             @default(50)
+  sends_today      Int?             @default(0)
+  last_send_reset  DateTime?        @db.Date
+  last_used_at     DateTime?        @db.Timestamptz(6)
+  created_at       DateTime?        @default(now()) @db.Timestamptz(6)
+  organizations    organizations    @relation(fields: [organization_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  email_messages   email_messages[]
+  email_campaigns  email_campaigns[]
+
+  @@unique([organization_id, email])
+  @@index([organization_id])
+  @@schema("public")
+}
+
+// One row per recipient send — the send log.
+model email_messages {
+  id                  String                @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organization_id     String                @db.Uuid
+  mailbox_id          String                @db.Uuid
+  campaign_id         String?               @db.Uuid
+  to_email            String
+  to_name             String?
+  subject             String
+  body                String
+  provider_message_id String?
+  thread_id           String?
+  status              email_message_status? @default(queued)
+  error               String?
+  credits_charged     Int?                  @default(0)
+  is_free_send        Boolean               @default(false)
+  sent_at             DateTime?             @db.Timestamptz(6)
+  created_at          DateTime?             @default(now()) @db.Timestamptz(6)
+  organizations       organizations         @relation(fields: [organization_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  mailboxes           mailboxes             @relation(fields: [mailbox_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  email_campaigns     email_campaigns?      @relation(fields: [campaign_id], references: [id], onDelete: SetNull, onUpdate: NoAction)
+
+  @@index([organization_id, created_at])
+  @@index([campaign_id])
+  @@schema("public")
+}
+
+// Campaign scaffolding (full architecture; MVP sends may leave campaign_id null).
+model email_campaigns {
+  id                   String                 @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organization_id      String                 @db.Uuid
+  name                 String
+  mailbox_id           String?                @db.Uuid
+  source_file          String?
+  status               campaign_status?       @default(draft)
+  created_at           DateTime?              @default(now()) @db.Timestamptz(6)
+  organizations        organizations          @relation(fields: [organization_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  mailboxes            mailboxes?             @relation(fields: [mailbox_id], references: [id], onDelete: SetNull, onUpdate: NoAction)
+  email_messages       email_messages[]
+  email_sequence_steps email_sequence_steps[]
+
+  @@index([organization_id])
+  @@schema("public")
+}
+
+// Sequence steps (schema only in MVP — no scheduler executes these yet).
+model email_sequence_steps {
+  id              String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  campaign_id     String          @db.Uuid
+  step_order      Int
+  wait_days       Int             @default(0)
+  subject_tpl     String?
+  body_tpl        String?
+  stop_on_reply   Boolean         @default(true)
+  created_at      DateTime?       @default(now()) @db.Timestamptz(6)
+  email_campaigns email_campaigns @relation(fields: [campaign_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([campaign_id, step_order])
+  @@schema("public")
+}
+
+// Suppression list — checked before every send (compliance).
+model unsubscribes {
+  id              String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organization_id String        @db.Uuid
+  email           String
+  reason          String?
+  created_at      DateTime?     @default(now()) @db.Timestamptz(6)
+  organizations   organizations @relation(fields: [organization_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([organization_id, email])
+  @@schema("public")
+}
+
+enum email_provider {
+  google
+  microsoft
+
+  @@schema("public")
+}
+
+enum mailbox_status {
+  active
+  revoked
+  error
+
+  @@schema("public")
+}
+
+enum email_message_status {
+  queued
+  sent
+  failed
+  bounced
+
+  @@schema("public")
+}
+
+enum campaign_status {
+  draft
+  sending
+  paused
+  completed
+
+  @@schema("public")
+}
+
 enum job_status {
   queued
   running
   completed
   failed
+  paused
+  stopped
 
   @@schema("public")
 }

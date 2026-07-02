@@ -104,7 +104,28 @@ function matchItemToIdentifier(item, identifiers, matched, getItemDomains, getIt
     const itemDomains = getItemDomains(item).map(extractDomain).filter(Boolean);
     const itemNames = getItemNames(item).filter(Boolean);
 
-    // 1. Domain match — the strongest signal.
+    // Normalized linkedin.com/company path (e.g. "linkedin.com/company/apple")
+    // for URL matching, from the resolved linkedinUrl or a LinkedIn website.
+    const companyPath = (id) => {
+        const url = String(id.linkedinUrl || '').trim() ||
+            (String(id.website || '').includes('linkedin.com/company') ? id.website : '');
+        const m = String(url).match(/linkedin\.com\/company\/([^/?#]+)/i);
+        return m ? `linkedin.com/company/${m[1].toLowerCase()}` : '';
+    };
+    const itemCompanyPaths = getItemDomains(item)
+        .map(v => {
+            const m = String(v || '').match(/linkedin\.com\/company\/([^/?#]+)/i);
+            return m ? `linkedin.com/company/${m[1].toLowerCase()}` : '';
+        })
+        .filter(Boolean);
+
+    // 1a. LinkedIn company URL match — strongest signal when we resolved one.
+    for (const id of identifiers) {
+        if (matched.has(id.key)) continue;
+        const idPath = companyPath(id);
+        if (idPath && itemCompanyPaths.includes(idPath)) return id;
+    }
+    // 1b. Domain match — the strongest signal for real websites.
     for (const id of identifiers) {
         if (matched.has(id.key)) continue;
         const idDomain = extractDomain(id.website);
@@ -125,16 +146,28 @@ function matchItemToIdentifier(item, identifiers, matched, getItemDomains, getIt
     return null;
 }
 
+// A resolved LinkedIn company URL, if one is present on the identifier. Set by
+// the Serper resolver (see services/serperLookup.js) so we prefer the exact
+// company URL over a fuzzy name search.
+function companyUrl(id) {
+    const linkedinUrl = String(id.linkedinUrl || '').trim();
+    if (linkedinUrl.includes('linkedin.com/company')) return linkedinUrl;
+    const website = String(id.website || '').trim();
+    if (website.includes('linkedin.com/company')) return website;
+    return '';
+}
+
 // Split structured identifiers into the actor's `companies` (LinkedIn company
 // URLs) and `searches` (names / websites the actor can search for).
 function partitionForSearch(identifiers) {
     const companies = [];
     const searches = [];
     for (const id of identifiers) {
+        const url = companyUrl(id);
         const website = String(id.website || '').trim();
         const name = String(id.name || '').trim();
-        if (website.includes('linkedin.com/company')) {
-            companies.push(website);
+        if (url) {
+            companies.push(url);
         } else if (name) {
             searches.push(name);
         } else if (website) {
@@ -192,11 +225,13 @@ async function enrichEmployees(identifiers) {
     if (ids.length === 0) return { runId: null, byIdentifier: new Map() };
 
     // Both LinkedIn company URLs and plain names go in the same `companies` array.
+    // Prefer a resolved LinkedIn company URL (Serper) over a name search.
     const companies = [];
     for (const id of ids) {
+        const url = companyUrl(id);
         const website = String(id.website || '').trim();
         const name = String(id.name || '').trim();
-        if (website.includes('linkedin.com/company')) companies.push(website);
+        if (url) companies.push(url);
         else if (name) companies.push(name);
         else if (website) companies.push(website);
     }
@@ -242,28 +277,28 @@ async function enrichEmployees(identifiers) {
 }
 
 /**
- * Enrich individual LinkedIn profiles via futurizerush/linkedin-profile-scraper.
+ * Enrich individual LinkedIn profiles via harvestapi/linkedin-profile-scraper.
  * @param {string[]} profileUrls - LinkedIn profile URLs
  */
 async function enrichProfiles(profileUrls) {
     const clean = [...new Set((profileUrls || []).map(u => String(u || '').trim()).filter(Boolean))];
     if (clean.length === 0) return { runId: null, byIdentifier: new Map() };
 
-    const { runId, items } = await runActor(config.apify.profileActorId, { profileUrls: clean });
+    // No-email mode ($4/1k) — the $10/1k email-search mode is not used here.
+    const { runId, items } = await runActor(config.apify.profileActorId, {
+        profileScraperMode: 'Profile details no email ($4 per 1k)',
+        urls: clean,
+    });
 
+    // This actor does not echo the input URL back; it returns its own canonical
+    // `linkedinUrl` per profile, so match on that (normalized) instead.
     const byIdentifier = new Map();
     for (const item of items) {
-        // The actor echoes the input URL; match on the normalized form.
-        const keys = [item.inputUrl, item.linkedinUrl, item.url];
-        for (const k of keys) {
-            const nk = normalizeLinkedinUrl(k);
-            if (!nk) continue;
-            // Find the original identifier whose normalized value matches.
-            const original = clean.find(c => normalizeLinkedinUrl(c) === nk);
-            if (original && !byIdentifier.has(original)) {
-                byIdentifier.set(original, item);
-                break;
-            }
+        const nk = normalizeLinkedinUrl(item.linkedinUrl);
+        if (!nk) continue;
+        const original = clean.find(c => normalizeLinkedinUrl(c) === nk);
+        if (original && !byIdentifier.has(original)) {
+            byIdentifier.set(original, item);
         }
     }
     return { runId, byIdentifier };

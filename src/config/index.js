@@ -43,13 +43,58 @@ module.exports = {
         token: process.env.APIFY_TOKEN || '',
         companyActorId: process.env.APIFY_COMPANY_ACTOR || 'harvestapi/linkedin-company',
         employeesActorId: process.env.APIFY_EMPLOYEES_ACTOR || 'harvestapi/linkedin-company-employees',
-        profileActorId: process.env.APIFY_PROFILE_ACTOR || 'futurizerush/linkedin-profile-scraper',
+        profileActorId: process.env.APIFY_PROFILE_ACTOR || 'harvestapi/linkedin-profile-scraper',
         // Credits charged per successfully enriched row, by enrichment type.
         creditCost: {
             company: parseInt(process.env.APIFY_CREDIT_COST_COMPANY, 10) || 1,
             employees: parseInt(process.env.APIFY_CREDIT_COST_EMPLOYEES, 10) || 2,
             profile: parseInt(process.env.APIFY_CREDIT_COST_PROFILE, 10) || 4,
         },
+        // Cascade pricing: when "profile" runs the company -> employees -> profiles
+        // cascade, each company is charged a flat base plus a per-scraped-profile fee.
+        // The per-profile fee varies by cascade scope: decision-makers (pre-filtered
+        // to Founders/C-level/VP/Director/Head) carry a premium over bulk scopes,
+        // since they're higher business value than an unfiltered employee list.
+        cascadeBasePerCompany: parseInt(process.env.APIFY_CASCADE_BASE_PER_COMPANY, 10) || 2,
+        cascadePerProfileByScope: {
+            all: parseInt(process.env.APIFY_CASCADE_PER_PROFILE_ALL, 10) || 3,
+            capped: parseInt(process.env.APIFY_CASCADE_PER_PROFILE_CAPPED, 10) || 3,
+            'decision-makers': parseInt(process.env.APIFY_CASCADE_PER_PROFILE_DECISION_MAKERS, 10) || 5,
+        },
+        // Default cap for the "capped" cascade scope when no profileCap is supplied.
+        cascadeDefaultCap: parseInt(process.env.APIFY_CASCADE_DEFAULT_CAP, 10) || 10,
+    },
+
+    // Serper (google.serper.dev) is used to resolve each company's official
+    // LinkedIn company URL before enrichment, so the Apify actors receive an
+    // exact linkedin.com/company URL instead of a fuzzy name search. Disabled
+    // (falls back to name search) when no API key is configured.
+    serper: {
+        apiKey: process.env.SERPER_API_KEY || '',
+        endpoint: process.env.SERPER_ENDPOINT || 'https://google.serper.dev/search',
+        gl: process.env.SERPER_GL || 'us',
+        hl: process.env.SERPER_HL || 'en',
+        concurrency: parseInt(process.env.SERPER_CONCURRENCY, 10) || 4,
+        timeoutMs: parseInt(process.env.SERPER_TIMEOUT_MS, 10) || 15000,
+        enabled: !!process.env.SERPER_API_KEY,
+    },
+
+    // OpenRouter (openrouter.ai) powers the LinkedIn copilot's AI message
+    // drafts. Any OpenAI-compatible model can be selected via OPENROUTER_MODEL
+    // without code changes. Disabled when no API key is configured.
+    openrouter: {
+        apiKey: process.env.OPENROUTER_API_KEY || '',
+        baseUrl: process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1',
+        model: process.env.OPENROUTER_MODEL || 'openai/gpt-4o-mini',
+        maxTokens: parseInt(process.env.OPENROUTER_MAX_TOKENS, 10) || 500,
+        timeoutMs: parseInt(process.env.OPENROUTER_TIMEOUT_MS, 10) || 30000,
+        enabled: !!process.env.OPENROUTER_API_KEY,
+    },
+
+    // LinkedIn copilot (Chrome extension). Each draft or rewrite is one
+    // OpenRouter call, charged against the org's enrichment credit balance.
+    copilot: {
+        creditCostDraft: parseInt(process.env.COPILOT_CREDIT_COST_DRAFT, 10) || 1,
     },
 
     scraper: {
@@ -57,6 +102,9 @@ module.exports = {
         httpTimeoutMs: parseInt(process.env.HTTP_TIMEOUT_MS, 10) || 30000,
         concurrentLimit: parseInt(process.env.CONCURRENT_LIMIT, 10) || 10,
         maxUnchangedScrolls: parseInt(process.env.MAX_UNCHANGED_SCROLLS, 10) || 20,
+        // Higher no-new-results stall ceiling used only when no limit is set, so a
+        // long lazy-loading feed reaches its end-of-list sentinel before giving up.
+        maxUnchangedScrollsExhaust: parseInt(process.env.MAX_UNCHANGED_SCROLLS_EXHAUST, 10) || 40,
         maxQueriesPerRequest: parseInt(process.env.MAX_QUERIES_PER_REQUEST, 10) || 50,
 
         // Tiled map coverage: re-center the viewport across a grid of points to

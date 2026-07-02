@@ -1,3 +1,4 @@
+@import url('https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
 @import "tailwindcss";
 
 @theme inline {
@@ -8,6 +9,8 @@
   --color-muted: var(--muted);
   --color-muted-foreground: var(--muted-foreground);
   --color-border: var(--border);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
 }
@@ -20,6 +23,8 @@
   --muted: #f4f4f5;
   --muted-foreground: #71717a;
   --border: #e4e4e7;
+  --card: #ffffff;
+  --card-foreground: #09090b;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -31,6 +36,8 @@
     --muted: #27272a;
     --muted-foreground: #a1a1aa;
     --border: #27272a;
+    --card: #09090b;
+    --card-foreground: #fafafa;
   }
 }
 

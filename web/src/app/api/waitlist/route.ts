@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { createClient } from '@/utils/supabase/server';
+import { prisma } from '@/lib/prisma';
 
 export async function POST(request: Request) {
   try {
@@ -9,22 +9,18 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Valid email is required' }, { status: 400 });
     }
 
-    const supabase = await createClient();
-    const { error } = await supabase
-      .from('waitlist')
-      .insert({ email: email.toLowerCase().trim() });
-
-    if (error) {
-      // Unique constraint violation means email already registered
-      if (error.code === '23505') {
+    try {
+      await prisma.waitlist.create({ data: { email: email.toLowerCase().trim() } });
+    } catch (err: any) {
+      // Unique constraint violation means email already registered.
+      if (err.code === 'P2002') {
         return NextResponse.json({ message: 'Already subscribed' });
       }
-      console.error('Waitlist insert error:', error);
-      return NextResponse.json({ error: 'Failed to subscribe' }, { status: 500 });
+      throw err;
     }
 
     return NextResponse.json({ message: 'Subscribed successfully' });
-  } catch (err) {
+  } catch (err: any) {
     console.error('Waitlist route error:', err);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }

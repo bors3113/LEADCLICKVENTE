@@ -1,5 +1,7 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@/utils/supabase/server';
+import { prisma } from '@/lib/prisma';
+import { dispatchQueue } from '@/lib/scraperQueue';
 
 export async function POST(request: Request) {
   try {
@@ -18,13 +20,10 @@ export async function POST(request: Request) {
     }
 
     const resolvedQuery = query || (location ? `${keyword} in ${location}` : keyword);
-
-    // Clamp the per-job limit to a sane range (default 50).
     const parsedLimit = Math.max(1, Math.min(1000, parseInt(String(limit), 10) || 50));
 
-    const { data: job, error: jobError } = await supabase
-      .from('scraping_jobs')
-      .insert({
+    const job = await prisma.scraping_jobs.create({
+      data: {
         project_id: projectId || null,
         status: 'queued',
         config: {
@@ -33,22 +32,10 @@ export async function POST(request: Request) {
           location: location || null,
           limit: parsedLimit,
         },
-      })
-      .select()
-      .single();
+      },
+    });
 
-    if (jobError) {
-      console.error('Job insertion error:', jobError);
-      return NextResponse.json({ error: jobError.message, details: jobError }, { status: 500 });
-    }
-
-    const workerUrl = process.env.WORKER_URL || 'http://localhost:8787';
-
-    fetch(`${workerUrl}/scrape`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ query: resolvedQuery, jobId: job.id, limit: parsedLimit }),
-    }).catch(err => console.error('Failed to trigger worker:', err));
+    dispatchQueue().catch(err => console.error('Queue dispatch error:', err));
 
     return NextResponse.json({
       success: true,
@@ -75,23 +62,15 @@ export async function GET(request: Request) {
     const jobId = searchParams.get('id');
 
     if (jobId) {
-      const { data, error } = await supabase
-        .from('scraping_jobs')
-        .select('*')
-        .eq('id', jobId)
-        .single();
-
-      if (error) throw error;
-      return NextResponse.json({ job: data });
+      const job = await prisma.scraping_jobs.findUnique({ where: { id: jobId } });
+      if (!job) return NextResponse.json({ error: 'Not found' }, { status: 404 });
+      return NextResponse.json({ job });
     } else {
-      const { data, error } = await supabase
-        .from('scraping_jobs')
-        .select('*')
-        .order('created_at', { ascending: false })
-        .limit(20);
-
-      if (error) throw error;
-      return NextResponse.json({ jobs: data });
+      const jobs = await prisma.scraping_jobs.findMany({
+        orderBy: { created_at: 'desc' },
+        take: 20,
+      });
+      return NextResponse.json({ jobs });
     }
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });

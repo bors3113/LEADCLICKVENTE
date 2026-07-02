@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { FileSpreadsheet, ArrowRight, Download, Loader2, Sparkles } from 'lucide-react';
+import { FileSpreadsheet, ArrowRight, Download, Loader2, Sparkles, Table } from 'lucide-react';
 import Link from 'next/link';
 import { toast } from 'sonner';
 import Papa from 'papaparse';
@@ -34,9 +34,9 @@ type Tab = 'scraped' | 'enriched';
 type Format = 'csv' | 'excel' | 'sql';
 
 const FORMAT_COLORS: Record<Format, string> = {
-  csv:   'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100',
-  excel: 'bg-blue-50   text-blue-700   border-blue-200   hover:bg-blue-100',
-  sql:   'bg-violet-50  text-violet-700  border-violet-200  hover:bg-violet-100',
+  csv:   'bg-emerald-50 text-emerald-600 border-emerald-200/60 hover:bg-emerald-100 hover:border-emerald-300 shadow-[0_2px_10px_-3px_rgba(16,185,129,0.2)]',
+  excel: 'bg-blue-50 text-blue-600 border-blue-200/60 hover:bg-blue-100 hover:border-blue-300 shadow-[0_2px_10px_-3px_rgba(59,130,246,0.2)]',
+  sql:   'bg-violet-50 text-violet-600 border-violet-200/60 hover:bg-violet-100 hover:border-violet-300 shadow-[0_2px_10px_-3px_rgba(139,92,246,0.2)]',
 };
 
 function downloadBlob(blob: Blob, filename: string) {
@@ -245,15 +245,24 @@ export default function ResultsPage() {
             {results.map((r) => {
               const isExportingThis = exporting?.startsWith(r.jobId);
               return (
-                <tr key={r.jobId} className="hover:bg-muted/20 transition-colors group">
+                <tr key={r.jobId} className="hover:bg-muted/30 transition-colors group">
                   <td className="py-4 pl-6 pr-3">
-                    <p className="text-sm font-medium text-foreground">{r.label}</p>
+                    <p className="text-sm font-medium text-foreground group-hover:text-primary transition-colors">{r.label}</p>
                     {r.projectName && (
-                      <p className="text-xs text-muted-foreground mt-0.5">{r.projectName}</p>
+                      <p className="text-xs text-muted-foreground mt-1 flex items-center gap-1.5">
+                        <span className="w-1.5 h-1.5 rounded-full bg-primary/40"></span>
+                        {r.projectName}
+                      </p>
                     )}
                   </td>
-                  <td className="px-3 py-4 text-sm tabular-nums font-medium text-foreground whitespace-nowrap">
-                    {r.count > 0 ? r.count.toLocaleString() : <span className="text-muted-foreground">—</span>}
+                  <td className="px-3 py-4 text-sm font-medium whitespace-nowrap">
+                    {r.count > 0 ? (
+                      <span className="inline-flex items-center px-2 py-0.5 rounded-full bg-primary/10 text-primary text-xs font-semibold tabular-nums border border-primary/20">
+                        {r.count.toLocaleString()}
+                      </span>
+                    ) : (
+                      <span className="text-muted-foreground">—</span>
+                    )}
                   </td>
                   <td className="px-3 py-4 text-sm text-muted-foreground whitespace-nowrap">
                     {formatDate(r.createdAt)}
@@ -266,12 +275,23 @@ export default function ResultsPage() {
                         keyPrefix={r.jobId}
                         onExport={(fmt) => handleExport(r, fmt)}
                       />
+                      {(r.resultFile || r.localFile || r.filename) && (
+                        <Link
+                          href={`/dashboard/editor?jobId=${r.jobId}`}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-indigo-200 bg-indigo-50 text-indigo-700 text-[11px] font-semibold tracking-wide hover:bg-indigo-100 hover:border-indigo-300 transition-all duration-200 hover:-translate-y-0.5 shadow-[0_2px_10px_-3px_rgba(99,102,241,0.2)] dark:bg-indigo-950/20 dark:border-indigo-900/40 dark:text-indigo-400 dark:hover:bg-indigo-950/30"
+                          title="Open in Data Editor"
+                        >
+                          <Table className="h-3.5 w-3.5" />
+                          EDIT
+                        </Link>
+                      )}
                       {r.resultFile && (
                         <Link
                           href={`/dashboard/results/${r.jobId}`}
-                          className="inline-flex items-center gap-1 pl-2 text-sm text-primary hover:text-primary/80 font-medium border-l border-border ml-1"
+                          className="inline-flex items-center justify-center h-8 w-8 rounded-full bg-muted text-muted-foreground hover:bg-primary hover:text-primary-foreground transition-colors ml-1"
+                          title="View Details"
                         >
-                          View <ArrowRight className="h-3.5 w-3.5" />
+                          <ArrowRight className="h-4 w-4" />
                         </Link>
                       )}
                     </div>
@@ -293,16 +313,24 @@ export default function ResultsPage() {
             const isExportingThis = exporting?.startsWith(e.filename);
             const isCsv = e.filename.toLowerCase().endsWith('.csv');
             return (
-              <tr key={e.filename} className="hover:bg-muted/20 transition-colors group">
+              <tr key={e.filename} className="hover:bg-muted/30 transition-colors group">
                 <td className="py-4 pl-6 pr-3">
-                  <div className="flex items-center gap-2">
-                    <Sparkles className="h-3.5 w-3.5 text-violet-500 flex-shrink-0" />
-                    <p className="text-sm font-medium text-foreground">{e.label}</p>
+                  <div className="flex items-center gap-2.5">
+                    <div className="flex items-center justify-center w-8 h-8 rounded-full bg-violet-100 text-violet-600">
+                      <Sparkles className="h-4 w-4" />
+                    </div>
+                    <div>
+                      <p className="text-sm font-medium text-foreground group-hover:text-violet-600 transition-colors">{e.label}</p>
+                      <p className="text-xs text-muted-foreground mt-0.5">LinkedIn enriched</p>
+                    </div>
                   </div>
-                  <p className="text-xs text-muted-foreground mt-0.5">LinkedIn enriched</p>
                 </td>
-                <td className="px-3 py-4 text-sm text-muted-foreground whitespace-nowrap uppercase">
-                  {isCsv ? 'CSV' : 'XLSX'}
+                <td className="px-3 py-4 text-sm font-medium text-muted-foreground whitespace-nowrap uppercase">
+                  {isCsv ? (
+                    <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-emerald-50 text-emerald-700 border border-emerald-200/60 text-xs">CSV</span>
+                  ) : (
+                    <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-blue-50 text-blue-700 border border-blue-200/60 text-xs">XLSX</span>
+                  )}
                 </td>
                 <td className="px-3 py-4 text-sm text-muted-foreground whitespace-nowrap">
                   {formatDate(e.createdAt)}
@@ -315,6 +343,14 @@ export default function ResultsPage() {
                       keyPrefix={e.filename}
                       onExport={(fmt) => handleExportEnriched(e, fmt)}
                     />
+                    <Link
+                      href={`/dashboard/editor?${e.key ? `key=${encodeURIComponent(e.key)}` : `file=${encodeURIComponent(e.filename)}`}`}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-indigo-200 bg-indigo-50 text-indigo-700 text-[11px] font-semibold tracking-wide hover:bg-indigo-100 hover:border-indigo-300 transition-all duration-200 hover:-translate-y-0.5 shadow-[0_2px_10px_-3px_rgba(99,102,241,0.2)] dark:bg-indigo-950/20 dark:border-indigo-900/40 dark:text-indigo-400 dark:hover:bg-indigo-950/30"
+                      title="Open in Data Editor"
+                    >
+                      <Table className="h-3.5 w-3.5" />
+                      EDIT
+                    </Link>
                   </div>
                 </td>
               </tr>
@@ -370,12 +406,12 @@ function ExportButtons({
           key={fmt}
           onClick={() => onExport(fmt)}
           disabled={disabled}
-          className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border text-xs font-semibold transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${FORMAT_COLORS[fmt]}`}
+          className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-[11px] font-semibold tracking-wide transition-all duration-200 disabled:opacity-40 disabled:cursor-not-allowed hover:-translate-y-0.5 ${FORMAT_COLORS[fmt]}`}
         >
           {activeKey === `${keyPrefix}-${fmt}` ? (
-            <Loader2 className="h-3 w-3 animate-spin" />
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
           ) : (
-            <Download className="h-3 w-3" />
+            <Download className="h-3.5 w-3.5" />
           )}
           {fmt.toUpperCase()}
         </button>
@@ -386,15 +422,15 @@ function ExportButtons({
 
 function TableShell({ headers, children }: { headers: string[]; children: React.ReactNode }) {
   return (
-    <div className="rounded-lg border border-border bg-background shadow-sm overflow-hidden">
-      <table className="min-w-full divide-y divide-border">
-        <thead className="bg-muted/50">
+    <div className="rounded-xl border border-border/50 bg-card shadow-sm overflow-hidden">
+      <table className="min-w-full divide-y divide-border/50">
+        <thead className="bg-muted/30">
           <tr>
             {headers.map((h, i) => (
               <th
                 key={h}
-                className={`py-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground ${
-                  i === 0 ? 'pl-6 pr-3 text-left' : i === headers.length - 1 ? 'px-3 text-right' : 'px-3 text-left'
+                className={`py-4 text-xs font-semibold uppercase tracking-wider text-muted-foreground ${
+                  i === 0 ? 'pl-6 pr-3 text-left' : i === headers.length - 1 ? 'px-6 text-right' : 'px-3 text-left'
                 }`}
               >
                 {h}
@@ -402,7 +438,7 @@ function TableShell({ headers, children }: { headers: string[]; children: React.
             ))}
           </tr>
         </thead>
-        <tbody className="divide-y divide-border bg-background">{children}</tbody>
+        <tbody className="divide-y divide-border/50 bg-transparent">{children}</tbody>
       </table>
     </div>
   );

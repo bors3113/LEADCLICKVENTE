@@ -17,6 +17,10 @@ router.get('/health', (req, res) => {
   res.json({ status: 'ok', uptime: process.uptime() });
 });
 
+// Copilot routes use their own per-org API-key auth (Chrome extension clients),
+// so they mount before the shared-secret gate below.
+router.use('/copilot', require('./copilot'));
+
 // All routes below require a valid API key when API_KEY is set in the environment
 router.use(requireApiKey);
 
@@ -25,6 +29,7 @@ router.post('/process-json', scraperController.processJson);
 router.post('/process-json-contact', scraperController.processJsonContact);
 router.get('/download', scraperController.downloadFile);
 router.post('/stop-scrape', scraperController.stopScraping);
+router.post('/pause-scrape', scraperController.pauseScraping);
 router.get('/scrape-status', scraperController.getScrapeStatus);
 router.post('/enrich', scraperController.enrichFile);
 

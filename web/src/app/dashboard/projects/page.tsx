@@ -1,37 +1,27 @@
 import { createClient } from '@/utils/supabase/server';
+import { prisma } from '@/lib/prisma';
 import { Folder } from 'lucide-react';
 import Link from 'next/link';
 import { NewProjectButton } from '@/components/NewProjectModal';
-
-type Project = {
-  id: string;
-  name: string;
-  description: string | null;
-  created_at: string;
-  scraping_jobs: { count: number }[];
-};
 
 export default async function ProjectsPage() {
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
 
-  let projects: Project[] = [];
+  let projects: Awaited<ReturnType<typeof prisma.projects.findMany>> = [];
 
   if (user) {
-    const { data: membership } = await supabase
-      .from('memberships')
-      .select('organization_id')
-      .eq('user_id', user.id)
-      .single();
+    const membership = await prisma.memberships.findFirst({
+      where: { user_id: user.id },
+      select: { organization_id: true },
+    });
 
     if (membership?.organization_id) {
-      const { data } = await supabase
-        .from('projects')
-        .select('id, name, description, created_at, scraping_jobs(count)')
-        .eq('organization_id', membership.organization_id)
-        .order('created_at', { ascending: false });
-
-      projects = (data as Project[]) ?? [];
+      projects = await prisma.projects.findMany({
+        where: { organization_id: membership.organization_id },
+        include: { _count: { select: { scraping_jobs: true } } },
+        orderBy: { created_at: 'desc' },
+      });
     }
   }
 
@@ -58,7 +48,7 @@ export default async function ProjectsPage() {
       ) : (
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {projects.map((project) => {
-            const jobCount = project.scraping_jobs?.[0]?.count ?? 0;
+            const jobCount = (project as any)._count?.scraping_jobs ?? 0;
             const lastRun = project.created_at
               ? new Date(project.created_at).toLocaleDateString()
               : '—';

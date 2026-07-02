@@ -1,4 +1,5 @@
 import { createClient } from '@/utils/supabase/server';
+import { prisma } from '@/lib/prisma';
 import { Activity, Database, CreditCard, Sparkles } from 'lucide-react';
 import { JobRealtimeTable } from '@/components/JobRealtimeTable';
 
@@ -6,52 +7,49 @@ export default async function DashboardOverview() {
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
 
-  const [
-    { count: totalExtractions },
-    { count: activeJobs },
-    { data: profile },
-    { data: membership },
-    { count: totalEnrichments },
-  ] = await Promise.all([
-    supabase.from('extracted_records').select('*', { count: 'exact', head: true }),
-    supabase.from('scraping_jobs').select('*', { count: 'exact', head: true }).in('status', ['queued', 'running']),
-    supabase.from('profiles').select('credits').eq('id', user?.id ?? '').single(),
-    supabase.from('memberships').select('organization_id').eq('user_id', user?.id ?? '').single(),
-    supabase.from('enrichment_jobs').select('*', { count: 'exact', head: true }).eq('status', 'completed'),
+  const membershipQuery = user
+    ? prisma.memberships.findFirst({
+        where: { user_id: user.id },
+        select: { organization_id: true },
+      })
+    : Promise.resolve(null);
+
+  const [totalExtractions, activeJobsCount, totalEnrichments, membership] = await Promise.all([
+    prisma.extracted_records.count(),
+    prisma.scraping_jobs.count({ where: { status: { in: ['queued', 'running'] } } }),
+    prisma.enrichment_jobs.count({ where: { status: 'completed' } }),
+    membershipQuery,
   ]);
 
-  const credits = (profile as { credits?: number } | null)?.credits ?? 0;
-  const orgId = (membership as { organization_id?: string } | null)?.organization_id ?? '';
+  const orgId = membership?.organization_id ?? '';
 
-  // Enrichment PAYG balance
-  let enrichBalance = 0;
-  if (orgId) {
-    const { data: org } = await supabase
-      .from('organizations')
-      .select('enrichment_credit_balance')
-      .eq('id', orgId)
-      .single();
-    enrichBalance = (org as { enrichment_credit_balance?: number } | null)?.enrichment_credit_balance ?? 0;
-  }
+  const org = orgId
+    ? await prisma.organizations.findUnique({
+        where: { id: orgId },
+        select: { enrichment_credit_balance: true },
+      })
+    : null;
+
+  const enrichBalance = org?.enrichment_credit_balance ?? 0;
 
   const stats = [
     {
       name: 'Total Extractions',
-      stat: (totalExtractions ?? 0).toLocaleString(),
+      stat: totalExtractions.toLocaleString(),
       icon: Database,
       sub: 'all time',
     },
     {
       name: 'Active Jobs',
-      stat: String(activeJobs ?? 0),
+      stat: String(activeJobsCount),
       icon: Activity,
       sub: 'queued or running',
     },
     {
-      name: 'Credits Remaining',
-      stat: credits.toLocaleString(),
+      name: 'Enrichments Done',
+      stat: totalEnrichments.toLocaleString(),
       icon: CreditCard,
-      sub: 'this billing period',
+      sub: 'completed LinkedIn enrichments',
     },
     {
       name: 'Enrichment Credits',

@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState, use } from 'react';
-import { FileSpreadsheet, Download, Loader2, ArrowLeft, ChevronLeft, ChevronRight } from 'lucide-react';
+import { FileSpreadsheet, Download, Loader2, ArrowLeft, ChevronLeft, ChevronRight, Table } from 'lucide-react';
 import Link from 'next/link';
 import Papa from 'papaparse';
 
@@ -98,8 +98,8 @@ export default function ResultViewerPage({
           }
           setRows(parsed);
         }
-      } catch (err: any) {
-        setError(err.message);
+      } catch (err: unknown) {
+        setError(err instanceof Error ? err.message : 'Failed to load file');
       } finally {
         setLoading(false);
       }
@@ -169,6 +169,14 @@ export default function ResultViewerPage({
         </div>
 
         <div className="flex items-center gap-2">
+          <Link
+            href={`/dashboard/editor?jobId=${jobId}`}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors shadow-sm"
+          >
+            <Table className="h-3.5 w-3.5" />
+            Edit Data
+          </Link>
+
           {(['csv', 'excel', 'sql'] as const).map(fmt => (
             <button
               key={fmt}

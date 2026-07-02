@@ -262,7 +262,15 @@ function formatSearchQuery(query) {
     };
 
     let unchangedScrolls = 0;
+    let endOfListSeen = false;
     const maxUnchangedScrolls = config.scraper.maxUnchangedScrolls;
+    // When no limit is set we want the full feed, so give a slow lazy-loading
+    // list more stalled iterations to reach its end-of-list sentinel before we
+    // give up. The limit path keeps the original (tighter) ceiling.
+    const noLimit = !limit || limit <= 0;
+    const effectiveMaxUnchanged = noLimit
+        ? config.scraper.maxUnchangedScrollsExhaust
+        : maxUnchangedScrolls;
 
     // Detect Google's "You've reached the end of the list" sentinel so we can
     // stop the moment the feed is exhausted instead of guessing with
@@ -343,8 +351,7 @@ function formatSearchQuery(query) {
                             socialMedia: {
                                 facebook: [],
                                 instagram: [],
-                                twitter: [],
-                                linkedin: []
+                                twitter: []
                             }
                         };
                     }
@@ -354,8 +361,7 @@ function formatSearchQuery(query) {
                         socialMedia: {
                             facebook: [],
                             instagram: [],
-                            twitter: [],
-                            linkedin: []
+                            twitter: []
                         }
                     };
                 }
@@ -403,8 +409,7 @@ function formatSearchQuery(query) {
                     socialMedia: {
                         facebook: [],
                         instagram: [],
-                        twitter: [],
-                        linkedin: []
+                        twitter: []
                     }
                 };
                 
@@ -420,7 +425,7 @@ function formatSearchQuery(query) {
         await Promise.all(promises);
     }
 
-    while (unchangedScrolls < maxUnchangedScrolls) {
+    while (unchangedScrolls < effectiveMaxUnchanged) {
         // Check if stop was requested
         if (isStopRequestedGlobal) {
             console.log('Stop requested during scrolling. Returning collected results so far.');
@@ -504,6 +509,7 @@ function formatSearchQuery(query) {
             // new, so we don't bail while the feed is still lazy-loading.
             if (await reachedEndOfList()) {
                 console.log('Reached end of results list. Stopping scroll.');
+                endOfListSeen = true;
                 break;
             }
         } else {
@@ -584,7 +590,9 @@ function formatSearchQuery(query) {
     console.log(`Returning ${results.length} unique results (requested limit: ${limit || 'none'})`);
     // Fix #3: expose whether the feed was fully exhausted so callers (navigateTiles)
     // can abort remaining tiles instead of navigating them needlessly.
-    results._feedExhausted = !limitReached && !isStopRequestedGlobal;
+    // Only report exhaustion when the sentinel was actually seen — a stall
+    // (maxUnchangedScrolls hit) doesn't prove the feed has no more results.
+    results._feedExhausted = endOfListSeen && !limitReached && !isStopRequestedGlobal;
     return results;
 }
 
@@ -747,7 +755,7 @@ async function interactWithMap(page, mapElement, limit = null) {
 // Maximize coverage by re-centering the map viewport across a deterministic,
 // zoom-aware grid of points (via the Maps URL) and re-scraping the feed at each.
 // Replaces blind pixel-based mouse dragging. Returns an array of unique results.
-async function navigateTiles(page, query, startCenter, limit = null, ringCount = config.scraper.tileRings) {
+async function navigateTiles(page, query, startCenter, limit = null, ringCount = config.scraper.tileRings, seedResults = []) {
     if (limit !== null && (limit <= 0 || isNaN(limit))) {
         console.log(`Invalid limit value: ${limit}. Skipping tiled navigation.`);
         return [];
@@ -757,7 +765,12 @@ async function navigateTiles(page, query, startCenter, limit = null, ringCount =
     const centers = buildTiledCenters(startCenter.lat, startCenter.lng, startCenter.zoom, ringCount);
     console.log(`Tiled navigation: ${centers.length} tiles (ringCount=${ringCount}) around @${startCenter.lat},${startCenter.lng},${startCenter.zoom}z`);
 
-    const allResults = new Set();
+    // Seed the dedupe set with results already collected (initial scroll), so
+    // the limit is measured against the true COMBINED unique count. Tiles overlap
+    // heavily with the initial feed; without seeding, duplicate tile hits waste
+    // the budget and the final unique total falls short of the requested limit.
+    const allResults = new Set(seedResults.map(r => JSON.stringify(r)));
+    const seedCount = allResults.size;
     let limitReached = false;
 
     for (const center of centers) {
@@ -795,11 +808,15 @@ async function navigateTiles(page, query, startCenter, limit = null, ringCount =
             continue;
         }
 
+        // remainingLimit is measured against the COMBINED unique count (seed +
+        // tiles), so overlap with the initial feed doesn't shrink the final total.
         const remainingLimit = limit ? Math.max(0, limit - allResults.size) : null;
+        const sizeBefore = allResults.size;
         const results = await scrapeCurrentView(page, remainingLimit);
         results.forEach(result => allResults.add(JSON.stringify(result)));
+        const newlyAdded = allResults.size - sizeBefore;
 
-        console.log(`Tile yielded ${results.length} results. Total unique so far: ${allResults.size}`);
+        console.log(`Tile yielded ${results.length} results (${newlyAdded} new). Total unique so far (incl. initial feed): ${allResults.size}`);
 
         if (limit && allResults.size >= limit) {
             console.log(`Reached limit of ${limit} unique results during tiled navigation. Stopping.`);
@@ -820,7 +837,13 @@ async function navigateTiles(page, query, startCenter, limit = null, ringCount =
         await page.evaluate(ms => new Promise(resolve => setTimeout(resolve, ms)), jitter);
     }
 
-    return Array.from(allResults).map(item => JSON.parse(item));
+    // Return only tile-discovered results (exclude the seeded initial-feed items)
+    // so the caller's "additional results" accounting stays accurate. The caller
+    // re-combines these with the initial results and dedupes again.
+    const seedSet = new Set(seedResults.map(r => JSON.stringify(r)));
+    return Array.from(allResults)
+        .filter(item => !seedSet.has(item))
+        .map(item => JSON.parse(item));
 }
 
 
@@ -1091,10 +1114,16 @@ async function scrapeInitialData(searchQuery, limit = null, format = 'excel', ti
         // Fix #4: scale tileRings down dynamically based on initial yield so we
         // don't burn time navigating a large grid when the area is clearly sparse.
         let effectiveTileRings = tileRings;
-        if (results._feedExhausted) {
-            // Feed was fully exhausted on the first view — skip tiled navigation entirely.
+        const stillNeedMore = limit && limit > 0 && results.length < limit;
+        if (results._feedExhausted && !stillNeedMore) {
+            // Feed was fully exhausted on the first view and we have enough — skip tiled navigation.
             effectiveTileRings = 0;
             console.log(`Initial feed exhausted with ${results.length} results. Setting tileRings=0 to skip grid navigation.`);
+        } else if (results._feedExhausted && stillNeedMore) {
+            // Current viewport is tapped out but the limit isn't met — tile
+            // navigation is the only way to reach it, so keep at least one ring.
+            effectiveTileRings = Math.max(tileRings, 1);
+            console.log(`Initial feed exhausted at ${results.length}/${limit}. Keeping tileRings=${effectiveTileRings} to find more via grid navigation.`);
         } else if (results.length <= 5) {
             effectiveTileRings = Math.min(tileRings, 1);
             console.log(`Sparse initial yield (${results.length}). Capping tileRings at 1.`);
@@ -1120,7 +1149,10 @@ async function scrapeInitialData(searchQuery, limit = null, format = 'excel', ti
                 // from the URL (e.g. Google didn't write @lat,lng for this query).
                 const startCenter = getMapCenter(page);
                 if (startCenter) {
-                    mapResults = await navigateTiles(page, searchQuery, startCenter, remainingLimit, effectiveTileRings);
+                    // Pass the FULL limit plus the initial results as a seed, so the
+                    // tile loop measures progress against the combined unique count
+                    // and keeps pulling tiles until the true total reaches the limit.
+                    mapResults = await navigateTiles(page, searchQuery, startCenter, limit, effectiveTileRings, results);
                     console.log(`Found ${mapResults.length} additional results from tiled navigation`);
                 } else {
                     console.log('Map center unavailable from URL; falling back to mouse-drag interaction.');
@@ -1345,13 +1377,13 @@ async function scrapeGoogleMapsData(page) {
 
   // Normalize/filter candidate URLs into profile links per platform.
   function normalizeSocialLinks(urls) {
-      const acc = { facebook: new Set(), instagram: new Set(), twitter: new Set(), linkedin: new Set() };
+      const acc = { facebook: new Set(), instagram: new Set(), twitter: new Set() };
       for (let raw of urls || []) {
           if (!raw) continue;
           let u = String(raw).trim().replace(/&amp;/gi, '&');
           if (u.startsWith('//')) u = 'https:' + u;
           if (!/^https?:\/\//i.test(u)) {
-              if (/^(?:www\.)?(?:facebook|instagram|twitter|x|linkedin)\.com/i.test(u)) u = 'https://' + u;
+              if (/^(?:www\.)?(?:facebook|instagram|twitter|x)\.com/i.test(u)) u = 'https://' + u;
               else continue;
           }
           let parsed;
@@ -1360,11 +1392,7 @@ async function scrapeGoogleMapsData(page) {
           const segs = parsed.pathname.split('/').filter(Boolean);
           const seg0 = (segs[0] || '').toLowerCase();
 
-          if (/(?:^|\.)linkedin\.com$/.test(host)) {
-              if (['company','in','school','showcase'].includes(seg0) && segs[1]) {
-                  acc.linkedin.add(`https://www.linkedin.com/${seg0}/${segs[1]}`);
-              }
-          } else if (/(?:^|\.)facebook\.com$/.test(host)) {
+          if (/(?:^|\.)facebook\.com$/.test(host)) {
               if (parsed.pathname.toLowerCase().startsWith('/profile.php') && parsed.searchParams.get('id')) {
                   acc.facebook.add(`https://www.facebook.com/profile.php?id=${parsed.searchParams.get('id')}`);
               } else if (seg0 && !SOCIAL_BLOCKLIST.has(seg0)) {
@@ -1384,7 +1412,6 @@ async function scrapeGoogleMapsData(page) {
           facebook: [...acc.facebook].slice(0, 10),
           instagram: [...acc.instagram].slice(0, 10),
           twitter: [...acc.twitter].slice(0, 10),
-          linkedin: [...acc.linkedin].slice(0, 10),
       };
   }
 
@@ -1429,8 +1456,7 @@ async function scrapeGoogleMapsData(page) {
                 socialMedia: {
                     facebook: [],
                     instagram: [],
-                    twitter: [],
-                    linkedin: []
+                    twitter: []
                 }
             };
         }
@@ -1632,8 +1658,7 @@ async function scrapeGoogleMapsData(page) {
                         socialMedia: {
                             facebook: [],
                             instagram: [],
-                            twitter: [],
-                            linkedin: []
+                            twitter: []
                         }
                     };
     
@@ -1678,8 +1703,7 @@ async function scrapeGoogleMapsData(page) {
                             socialMedia: {
                                 facebook: [],
                                 instagram: [],
-                                twitter: [],
-                                linkedin: []
+                                twitter: []
                             }
                         }
                     };
@@ -1822,26 +1846,25 @@ async function saveDataToJson(data, filePath = 'data/scraped_data.json') {
 // the returned fields as new columns onto each row, and re-exports the
 // enriched file. Returns enrichment stats used by the controller for billing.
 //
-// @param {string} filename - just the basename, e.g. "search_2024.xlsx"
-// @param {string[]} types  - subset of ['company','employees','profile']
-// @returns {Promise<{enrichedRows, enrichedCount, creditsByType, outputPath}>}
-async function enrichScrapedFile(filename, types) {
+// ---------------------------------------------------------------------------
+// Shared parsing: read a results file into rows + deduped company identifiers.
+// ---------------------------------------------------------------------------
+// Used by both the cascade planner (to learn employee counts before charging)
+// and the enrichment run itself, so parsing/column logic lives in one place.
+function readResultsFile(filename) {
     const XLSX = require('xlsx');
-    const { exportToExcel, exportToCSV } = require('../utils/excelExporter');
-    const { enrichCompany, enrichEmployees, enrichProfiles, normalizeKey } = require('./apifyEnrichment');
+    const { normalizeKey } = require('./apifyEnrichment');
 
     const sanitized = path.basename(filename);
     const inputPath = path.join(process.cwd(), 'results', sanitized);
-
     if (!fs.existsSync(inputPath)) {
         throw new Error(`Source file not found: ${sanitized}`);
     }
 
-    // Parse the file — xlsx handles both .xlsx and .csv transparently.
+    // xlsx handles both .xlsx and .csv transparently.
     const workbook = XLSX.readFile(inputPath);
     const sheetName = workbook.SheetNames[0];
     const rows = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName]);
-
     if (rows.length === 0) {
         throw new Error('Source file contains no rows.');
     }
@@ -1860,44 +1883,162 @@ async function enrichScrapedFile(filename, types) {
     // back up when merging onto rows.
     const rowKey = (row) => normalizeKey(rowWebsite(row) || rowName(row));
 
-    // Collect structured identifiers per company, deduplicated by key.
     const companyIdentifiers = [];
     const seenKeys = new Set();
-    const profileUrls = [];
-
+    const rowByKey = new Map();
     for (const row of rows) {
         const key = rowKey(row);
         if (key && !seenKeys.has(key)) {
             seenKeys.add(key);
             companyIdentifiers.push({ key, website: rowWebsite(row), name: rowName(row) });
+            rowByKey.set(key, row);
         }
-        const firstLink = rowFirstProfileUrl(row);
-        if (firstLink) profileUrls.push(firstLink);
     }
 
+    return { sanitized, inputPath, rows, companyIdentifiers, rowByKey, rowWebsite, rowName, rowFirstProfileUrl, rowKey };
+}
+
+// Resolve each company's official LinkedIn company URL via Serper and stamp it
+// onto the identifier as `linkedinUrl`, so the Apify actors receive an exact
+// linkedin.com/company URL instead of a fuzzy name search. Best-effort and
+// no-op when Serper is disabled — companies without a resolved URL fall back to
+// the existing name-search path. Mutates the identifiers in place.
+async function resolveCompanyLinkedinUrls(companyIdentifiers) {
+    if (!config.serper.enabled) return;
+    const { resolveLinkedinUrls } = require('./serperLookup');
+    const urlByKey = await resolveLinkedinUrls(companyIdentifiers);
+    for (const id of companyIdentifiers) {
+        const url = urlByKey.get(id.key);
+        if (url) id.linkedinUrl = url;
+    }
+}
+
+// Job titles that mark an employee as a decision-maker for the "decision-makers"
+// cascade scope. Matched case-insensitively against headline / position titles.
+const DECISION_MAKER_KEYWORDS = [
+    'founder', 'co-founder', 'cofounder', 'owner', 'ceo', 'cto', 'cfo', 'coo',
+    'cmo', 'chief', 'president', 'head', 'director', 'vp', 'vice president',
+    'manager', 'partner', 'principal', 'lead',
+];
+
+function employeeTitles(e) {
+    const pos = Array.isArray(e.currentPosition) ? e.currentPosition : [];
+    return [e.headline, ...pos.map(p => p && p.title), ...pos.map(p => p && p.position)]
+        .filter(Boolean).map(t => String(t).toLowerCase());
+}
+
+function isDecisionMaker(e) {
+    const titles = employeeTitles(e);
+    return titles.some(t => DECISION_MAKER_KEYWORDS.some(k => t.includes(k)));
+}
+
+// Apply the cascade scope to a company's employee array, yielding the employees
+// whose profiles we should scrape. scope: 'all' | 'capped' | 'decision-makers'.
+function applyCascadeScope(employees, scope, cap) {
+    const list = Array.isArray(employees) ? employees : [];
+    if (scope === 'decision-makers') return list.filter(isDecisionMaker);
+    if (scope === 'capped') return list.slice(0, Math.max(0, cap));
+    return list; // 'all'
+}
+
+/**
+ * Plan a company -> employees -> profiles cascade WITHOUT scraping full profiles.
+ * Runs the (cheaper) employees stage, applies the scope filter, and returns the
+ * exact profile URLs the cascade would scrape so the caller can price/gate the
+ * run before spending profile credits. The employees result is returned so the
+ * subsequent enrich run can reuse it instead of paying for the actor twice.
+ *
+ * @param {string} filename
+ * @param {{scope:string, profileCap:number}} options
+ * @returns {Promise<{companyCount, employeesByKey:Map, profileUrls:string[], profileCount, scope, profileCap}>}
+ */
+async function planCascade(filename, { scope = 'all', profileCap } = {}) {
+    const { enrichEmployees } = require('./apifyEnrichment');
+    const cap = Number.isInteger(profileCap) && profileCap > 0
+        ? profileCap : config.apify.cascadeDefaultCap;
+
+    const { companyIdentifiers } = readResultsFile(filename);
+    if (companyIdentifiers.length === 0) {
+        return { companyCount: 0, employeesByKey: new Map(), profileUrls: [], profileCount: 0, scope, profileCap: cap };
+    }
+
+    await resolveCompanyLinkedinUrls(companyIdentifiers);
+    const { byIdentifier: employeesByKey } = await enrichEmployees(companyIdentifiers);
+
+    const profileUrls = [];
+    for (const id of companyIdentifiers) {
+        const employees = employeesByKey.get(id.key) || [];
+        const scoped = applyCascadeScope(employees, scope, cap);
+        for (const e of scoped) {
+            if (e && e.linkedinUrl) profileUrls.push(e.linkedinUrl);
+        }
+    }
+    const dedupedUrls = [...new Set(profileUrls)];
+
+    return {
+        companyCount: companyIdentifiers.length,
+        employeesByKey,
+        profileUrls: dedupedUrls,
+        profileCount: dedupedUrls.length,
+        scope,
+        profileCap: cap,
+    };
+}
+
+// @param {string} filename - just the basename, e.g. "search_2024.xlsx"
+// @param {string[]} types  - subset of ['company','employees','profile']
+// @param {object} options  - { scope, profileCap, plannedCascade } for the
+//                            'profile' cascade. plannedCascade (from planCascade)
+//                            is reused so the employees actor isn't run twice.
+// @returns {Promise<{enrichedRows, enrichedCount, creditsByType, cascade, outputPath}>}
+async function enrichScrapedFile(filename, types, options = {}) {
+    const { exportToExcel, exportToCSV } = require('../utils/excelExporter');
+    const { enrichEmployees, enrichProfiles } = require('./apifyEnrichment');
+
+    const { scope = 'all', profileCap, plannedCascade = null } = options;
+    const cap = Number.isInteger(profileCap) && profileCap > 0
+        ? profileCap : config.apify.cascadeDefaultCap;
+
+    const { sanitized, rows, companyIdentifiers, rowKey } = readResultsFile(filename);
+
+    await resolveCompanyLinkedinUrls(companyIdentifiers);
+
+    const includeProfile = types.includes('profile');
     const results = {};
     const creditsByType = {};
 
-    if (types.includes('company') && companyIdentifiers.length > 0) {
-        const { byIdentifier } = await enrichCompany(companyIdentifiers);
-        results.company = byIdentifier;
-        creditsByType.company = byIdentifier.size;
-    }
-
-    // Employees are fetched when explicitly requested, or as the source for
-    // profile data when the rows carry no LinkedIn profile URLs of their own.
+    // Employees are fetched when explicitly requested, or as the first stage of
+    // the profile cascade. For the cascade we reuse the plan's employees result.
     const wantEmployees = types.includes('employees');
-    const profileNeedsEmployees = types.includes('profile') && profileUrls.length === 0;
-    if ((wantEmployees || profileNeedsEmployees) && companyIdentifiers.length > 0) {
+    if (includeProfile && plannedCascade && plannedCascade.employeesByKey) {
+        results.employees = plannedCascade.employeesByKey;
+    } else if ((wantEmployees || includeProfile) && companyIdentifiers.length > 0) {
         const { byIdentifier } = await enrichEmployees(companyIdentifiers);
         results.employees = byIdentifier;
-        if (wantEmployees) creditsByType.employees = byIdentifier.size;
+    }
+    if (wantEmployees && results.employees) {
+        creditsByType.employees = results.employees.size;
     }
 
-    if (types.includes('profile') && profileUrls.length > 0) {
-        const { byIdentifier } = await enrichProfiles([...new Set(profileUrls)]);
-        results.profile = byIdentifier;
-        creditsByType.profile = byIdentifier.size;
+    // Profile cascade: for each company, scope its employees, then scrape those
+    // employees' full LinkedIn profiles. One output row per scraped profile.
+    let cascade = null;
+    if (includeProfile) {
+        // Build the scoped employee list per company (reusing the plan when present).
+        const scopedByKey = new Map();
+        const allUrls = [];
+        for (const id of companyIdentifiers) {
+            const employees = (results.employees && results.employees.get(id.key)) || [];
+            const scoped = applyCascadeScope(employees, scope, cap);
+            scopedByKey.set(id.key, scoped);
+            for (const e of scoped) {
+                if (e && e.linkedinUrl) allUrls.push(e.linkedinUrl);
+            }
+        }
+        const urls = [...new Set(allUrls)];
+        const { byIdentifier: profileByUrl } = await enrichProfiles(urls);
+        results.profile = profileByUrl;
+        cascade = { scopedByKey, profileByUrl, scope, profileCap: cap };
     }
 
     // First LinkedIn company location, formatted as a headquarters string.
@@ -1909,19 +2050,10 @@ async function enrichScrapedFile(filename, types) {
             .filter(Boolean).join(', ');
     };
 
-    // Merge enrichment data onto each row as flat new columns.
-    // enrichedCount tracks how many rows actually gained ≥1 li_* field.
-    let enrichedCount = 0;
-    const enrichedRows = rows.map(row => {
-        const merged = { ...row };
-        let rowEnriched = false;
-
-        const companyKey = rowKey(row);
-        const includeProfile = types.includes('profile');
-
+    // Build the flat company-level li_company_* / li_employees columns for a row.
+    const applyCompanyColumns = (merged, companyKey) => {
         if (results.company && results.company.has(companyKey)) {
             const d = results.company.get(companyKey);
-            // industries may be strings or objects like { name } / { label }.
             const industryNames = (d.industries || []).map(ind =>
                 typeof ind === 'string' ? ind : (ind && (ind.name || ind.label || ind.value)) || ''
             ).filter(Boolean);
@@ -1934,59 +2066,82 @@ async function enrichScrapedFile(filename, types) {
             merged.li_company_url = d.linkedinUrl || '';
             merged.li_company_website = d.website || '';
             merged.li_company_description = d.tagline || d.description || '';
-            rowEnriched = true;
+            return true;
         }
+        return false;
+    };
 
-        const employees = results.employees && results.employees.has(companyKey)
-            ? (results.employees.get(companyKey) || [])
-            : [];
+    // Populate li_profile_* from a full profile-actor result.
+    const applyProfileColumns = (merged, p) => {
+        merged.li_profile_name = p.fullName || [p.firstName, p.lastName].filter(Boolean).join(' ');
+        merged.li_profile_headline = p.headline || '';
+        merged.li_profile_title = p.currentTitle || '';
+        merged.li_profile_company = p.currentCompany || '';
+        merged.li_profile_email = (p.emails || []).map(e => e.email || e).join(', ');
+        merged.li_profile_phone = (p.phones || []).map(ph => ph.phone || ph).join(', ');
+        merged.li_profile_location = p.location || '';
+        merged.li_profile_url = p.linkedinUrl || '';
+    };
 
-        if (types.includes('employees') && employees.length > 0) {
-            merged.li_employees = employees
+    // Merge enrichment data onto rows. For the cascade a single company row fans
+    // out into one row per scraped employee profile; otherwise it stays 1:1.
+    const { normalizeLinkedinUrl } = require('./apifyEnrichment');
+    let enrichedCount = 0;
+    let profilesScraped = 0;
+    const enrichedRows = [];
+
+    for (const row of rows) {
+        const companyKey = rowKey(row);
+        const base = { ...row };
+        const hasCompany = applyCompanyColumns(base, companyKey);
+
+        const employees = (results.employees && results.employees.get(companyKey)) || [];
+        if (wantEmployees && employees.length > 0) {
+            base.li_employees = employees
                 .map(e => [e.firstName, e.lastName, e.headline, e.linkedinUrl].filter(Boolean).join(' | '))
                 .join('; ');
-            merged.li_employee_count_scraped = employees.length;
-            rowEnriched = true;
+            base.li_employee_count_scraped = employees.length;
         }
 
-        // Profile: prefer a real profile-actor result for the row's own LinkedIn
-        // URL; otherwise fall back to the first employee we found for the company.
-        const firstLink = rowFirstProfileUrl(row);
-        if (includeProfile && results.profile && firstLink && results.profile.has(firstLink)) {
-            const p = results.profile.get(firstLink);
-            merged.li_profile_name = p.fullName || [p.firstName, p.lastName].filter(Boolean).join(' ');
-            merged.li_profile_headline = p.headline || '';
-            merged.li_profile_title = p.currentTitle || '';
-            merged.li_profile_company = p.currentCompany || '';
-            merged.li_profile_email = (p.emails || []).map(e => e.email || e).join(', ');
-            merged.li_profile_phone = (p.phones || []).map(ph => ph.phone || ph).join(', ');
-            merged.li_profile_location = p.location || '';
-            merged.li_profile_url = p.linkedinUrl || firstLink;
-            rowEnriched = true;
-        } else if (includeProfile && employees.length > 0) {
-            const e = employees[0];
-            const currentCompany = Array.isArray(e.currentPosition) && e.currentPosition[0]
-                ? e.currentPosition[0].companyName : '';
-            merged.li_profile_name = [e.firstName, e.lastName].filter(Boolean).join(' ');
-            merged.li_profile_headline = e.headline || '';
-            merged.li_profile_title = e.headline || '';
-            merged.li_profile_company = currentCompany || '';
-            merged.li_profile_email = '';
-            merged.li_profile_phone = '';
-            merged.li_profile_location = e.location || '';
-            merged.li_profile_url = e.linkedinUrl || '';
-            rowEnriched = true;
+        if (includeProfile && cascade) {
+            // Fan out: one row per scoped employee whose profile we scraped.
+            const scoped = cascade.scopedByKey.get(companyKey) || [];
+            const profileRows = [];
+            for (const e of scoped) {
+                const nk = normalizeLinkedinUrl(e.linkedinUrl);
+                if (!nk) continue;
+                // Find the matching profile result by normalized URL.
+                let profile = null;
+                for (const [url, p] of cascade.profileByUrl.entries()) {
+                    if (normalizeLinkedinUrl(url) === nk) { profile = p; break; }
+                }
+                if (!profile) continue;
+                const merged = { ...base };
+                applyProfileColumns(merged, profile);
+                profileRows.push(merged);
+                profilesScraped++;
+            }
+            if (profileRows.length > 0) {
+                enrichedRows.push(...profileRows);
+                enrichedCount += profileRows.length;
+            } else {
+                // No profiles for this company — keep the (possibly company-enriched) row.
+                enrichedRows.push(base);
+                if (hasCompany || (wantEmployees && employees.length > 0)) enrichedCount++;
+            }
+        } else {
+            enrichedRows.push(base);
+            if (hasCompany || (wantEmployees && employees.length > 0)) enrichedCount++;
         }
+    }
 
-        if (rowEnriched) enrichedCount++;
-        return merged;
-    });
+    if (includeProfile) creditsByType.profile = profilesScraped;
 
     // Re-export enriched data with a _linkedin suffix.
     const ext = path.extname(sanitized).toLowerCase();
-    const base = path.basename(sanitized, ext);
+    const fileBase = path.basename(sanitized, ext);
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const outputName = `${base}_linkedin_${timestamp}`;
+    const outputName = `${fileBase}_linkedin_${timestamp}`;
     let outputPath;
     if (ext === '.csv') {
         outputPath = exportToCSV(enrichedRows, outputName);
@@ -2005,7 +2160,12 @@ async function enrichScrapedFile(filename, types) {
         console.warn('Enriched R2 upload failed (non-fatal):', r2Err.message);
     }
 
-    return { enrichedRows, enrichedCount, creditsByType, outputPath, r2Key };
+    return {
+        enrichedRows, enrichedCount, creditsByType, outputPath, r2Key,
+        cascade: cascade
+            ? { companyCount: companyIdentifiers.length, profilesScraped, scope, profileCap: cap }
+            : null,
+    };
 }
 
 // Export the control functions
@@ -2017,6 +2177,7 @@ module.exports = {
     processJsonFile,
     processJsonFileWithContactInfo,
     enrichScrapedFile,
+    planCascade,
     extractContactInfo,
     normalizeEmails,
     normalizeSocialLinks,

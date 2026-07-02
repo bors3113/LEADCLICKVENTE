@@ -1,8 +1,9 @@
 'use client'
 
 import { useActionState, useState, useEffect, useRef } from 'react'
+import Link from 'next/link'
 import { login, signup, loginWithGoogle, type AuthState } from './actions'
-import { Eye, EyeOff, AlertTriangle, CheckCircle2, ArrowRight, Loader2 } from 'lucide-react'
+import { Eye, EyeOff, AlertTriangle, CheckCircle2, ArrowRight, Loader2, Sparkles } from 'lucide-react'
 
 type Mode = 'signin' | 'signup'
 
@@ -42,412 +43,161 @@ export function LoginForm() {
   }
 
   return (
-    <>
-      <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
-
-        .login-root * { box-sizing: border-box; }
-
-        @keyframes blink {
-          0%, 100% { opacity: 1; }
-          50% { opacity: 0; }
-        }
-        @keyframes fadeUp {
-          from { opacity: 0; transform: translateY(20px); }
-          to   { opacity: 1; transform: translateY(0); }
-        }
-        @keyframes scanline {
-          0%   { transform: translateY(-100%); }
-          100% { transform: translateY(100vh); }
-        }
-        @keyframes spin {
-          to { transform: rotate(360deg); }
-        }
-        @keyframes slideDown {
-          from { opacity: 0; transform: translateY(-8px); max-height: 0; }
-          to   { opacity: 1; transform: translateY(0);  max-height: 80px; }
-        }
-        @keyframes pulse-glow {
-          0%, 100% { box-shadow: 0 0 0 0 rgba(0,255,128,0); }
-          50%       { box-shadow: 0 0 0 6px rgba(0,255,128,0.08); }
-        }
-
-        .login-card {
-          animation: ${visible ? 'fadeUp 0.5s cubic-bezier(0.16,1,0.3,1) both' : 'none'};
-        }
-        .login-cursor {
-          animation: blink 1s step-end infinite;
-        }
-        .login-scanline {
-          animation: scanline 6s linear infinite;
-          opacity: 0.02;
-        }
-        .login-tab {
-          position: relative;
-          background: none;
-          border: none;
-          cursor: pointer;
-          font-family: 'Syne', sans-serif;
-          font-size: 13px;
-          font-weight: 600;
-          letter-spacing: 0.06em;
-          padding: 10px 0;
-          transition: color 0.2s;
-          color: #3d5a4a;
-          flex: 1;
-          text-transform: uppercase;
-        }
-        .login-tab::after {
-          content: '';
-          position: absolute;
-          bottom: 0; left: 0; right: 0;
-          height: 2px;
-          background: #00ff80;
-          transform: scaleX(0);
-          transition: transform 0.25s cubic-bezier(0.16,1,0.3,1);
-        }
-        .login-tab.active { color: #00ff80; }
-        .login-tab.active::after { transform: scaleX(1); }
-        .login-tab:hover:not(.active) { color: #7ab896; }
-
-        .login-input {
-          width: 100%;
-          background: #080f0b;
-          border: 1px solid rgba(0,255,128,0.12);
-          border-radius: 6px;
-          color: #c8e6d4;
-          font-family: 'JetBrains Mono', monospace;
-          font-size: 13px;
-          padding: 11px 14px;
-          outline: none;
-          transition: border-color 0.2s, box-shadow 0.2s;
-          caret-color: #00ff80;
-        }
-        .login-input::placeholder { color: #2d4a38; }
-        .login-input:focus {
-          border-color: rgba(0,255,128,0.4);
-          box-shadow: 0 0 0 3px rgba(0,255,128,0.06);
-        }
-
-        .login-submit {
-          width: 100%;
-          background: #00ff80;
-          color: #050908;
-          border: none;
-          border-radius: 6px;
-          padding: 13px;
-          font-family: 'JetBrains Mono', monospace;
-          font-size: 13px;
-          font-weight: 600;
-          letter-spacing: 0.08em;
-          cursor: pointer;
-          transition: opacity 0.15s, transform 0.15s, box-shadow 0.2s;
-          display: flex; align-items: center; justify-content: center; gap: 8px;
-        }
-        .login-submit:hover:not(:disabled) {
-          opacity: 0.92;
-          transform: translateY(-1px);
-          box-shadow: 0 4px 20px rgba(0,255,128,0.25);
-        }
-        .login-submit:active:not(:disabled) { transform: translateY(0); }
-        .login-submit:disabled { opacity: 0.4; cursor: not-allowed; }
-
-        .login-google {
-          width: 100%;
-          background: transparent;
-          color: #8aab96;
-          border: 1px solid rgba(0,255,128,0.12);
-          border-radius: 6px;
-          padding: 12px;
-          font-family: 'Syne', sans-serif;
-          font-size: 13px;
-          font-weight: 600;
-          letter-spacing: 0.04em;
-          cursor: pointer;
-          transition: background 0.2s, color 0.2s, border-color 0.2s;
-          display: flex; align-items: center; justify-content: center; gap: 10px;
-        }
-        .login-google:hover {
-          background: rgba(0,255,128,0.04);
-          color: #c8e6d4;
-          border-color: rgba(0,255,128,0.25);
-        }
-
-        .login-alert {
-          animation: slideDown 0.3s cubic-bezier(0.16,1,0.3,1) both;
-          overflow: hidden;
-        }
-
-        .login-eye {
-          position: absolute; right: 12px; top: 50%;
-          transform: translateY(-50%);
-          background: none; border: none; cursor: pointer;
-          color: #3d5a4a; padding: 2px;
-          transition: color 0.15s;
-          display: flex; align-items: center;
-        }
-        .login-eye:hover { color: #00ff80; }
-
-        .login-spinner {
-          width: 14px; height: 14px;
-          border: 2px solid #050908;
-          border-top-color: transparent;
-          border-radius: 50%;
-          animation: spin 0.7s linear infinite;
-        }
-      `}</style>
-
-      <div className="login-root" style={{
-        minHeight: '100vh',
-        background: '#060a08',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        padding: '24px',
-        position: 'relative',
-        overflow: 'hidden',
-        fontFamily: "'Syne', sans-serif",
-      }}>
-
-        {/* Dot grid background */}
-        <div style={{
-          position: 'absolute', inset: 0, pointerEvents: 'none',
-          backgroundImage: 'radial-gradient(circle, rgba(0,255,128,0.07) 1px, transparent 1px)',
-          backgroundSize: '28px 28px',
-        }} />
-
-        {/* Scanline sweep */}
-        <div className="login-scanline" style={{
-          position: 'absolute', inset: 0, pointerEvents: 'none',
-          background: 'linear-gradient(to bottom, transparent 0%, rgba(0,255,128,1) 50%, transparent 100%)',
-          height: '30%',
-        }} />
-
-        {/* Ambient glow */}
-        <div style={{
-          position: 'absolute', top: '50%', left: '50%',
-          transform: 'translate(-50%, -50%)',
-          width: '600px', height: '600px',
-          background: 'radial-gradient(circle, rgba(0,255,128,0.04) 0%, transparent 70%)',
-          pointerEvents: 'none',
-        }} />
-
-        {/* Card */}
-        <div className="login-card" style={{
-          width: '100%', maxWidth: '420px',
-          background: 'rgba(10,16,12,0.97)',
-          border: '1px solid rgba(0,255,128,0.18)',
-          borderRadius: '12px',
-          boxShadow: '0 0 0 1px rgba(0,255,128,0.05), 0 24px 48px rgba(0,0,0,0.6), 0 0 80px rgba(0,255,128,0.04)',
-          overflow: 'hidden',
-          position: 'relative',
-          zIndex: 1,
-        }}>
-
-          {/* Top accent line */}
-          <div style={{
-            height: '2px',
-            background: 'linear-gradient(90deg, transparent, #00ff80 30%, #00ff80 70%, transparent)',
-            opacity: 0.6,
-          }} />
-
-          <div style={{ padding: '32px 32px 28px' }}>
-
-            {/* Brand */}
-            <div style={{ marginBottom: '28px' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '8px' }}>
-                <div style={{
-                  width: '28px', height: '28px',
-                  background: 'rgba(0,255,128,0.12)',
-                  border: '1px solid rgba(0,255,128,0.25)',
-                  borderRadius: '6px',
-                  display: 'flex', alignItems: 'center', justifyContent: 'center',
-                }}>
-                  <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-                    <path d="M2 7L6 11L12 3" stroke="#00ff80" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-                  </svg>
-                </div>
-                <span style={{
-                  fontFamily: "'Syne', sans-serif",
-                  fontSize: '17px', fontWeight: 800,
-                  letterSpacing: '0.12em',
-                  color: '#e2ebe6',
-                  textTransform: 'uppercase',
-                }}>ClickVente</span>
-              </div>
-              <div style={{
-                display: 'flex', alignItems: 'center', gap: '7px',
-                fontFamily: "'JetBrains Mono', monospace",
-                fontSize: '10px', color: '#3d5a4a',
-                letterSpacing: '0.1em',
-              }}>
-                <span style={{
-                  display: 'inline-block',
-                  width: '6px', height: '6px',
-                  borderRadius: '50%',
-                  background: '#00ff80',
-                  boxShadow: '0 0 6px #00ff80',
-                }} />
-                OPERATOR ACCESS TERMINAL
-                <span className="login-cursor" style={{ color: '#00ff80' }}>_</span>
-              </div>
-            </div>
-
-            {/* Tabs */}
-            <div style={{
-              display: 'flex', gap: '0',
-              borderBottom: '1px solid rgba(0,255,128,0.08)',
-              marginBottom: '24px',
-            }}>
-              <button className={`login-tab${mode === 'signin' ? ' active' : ''}`} onClick={() => switchMode('signin')}>
-                Sign In
-              </button>
-              <button className={`login-tab${mode === 'signup' ? ' active' : ''}`} onClick={() => switchMode('signup')}>
-                Create Account
-              </button>
-            </div>
-
-            {/* Alert */}
-            {state?.error && (
-              <div className="login-alert" style={{
-                display: 'flex', alignItems: 'flex-start', gap: '10px',
-                background: 'rgba(255,60,60,0.06)',
-                border: '1px solid rgba(255,60,60,0.2)',
-                borderRadius: '6px',
-                padding: '12px 14px',
-                marginBottom: '20px',
-                color: '#ff6b6b',
-                fontFamily: "'JetBrains Mono', monospace",
-                fontSize: '12px', lineHeight: '1.5',
-              }}>
-                <AlertTriangle size={14} style={{ flexShrink: 0, marginTop: '1px' }} />
-                {state.error}
-              </div>
-            )}
-
-            {state?.message && (
-              <div className="login-alert" style={{
-                display: 'flex', alignItems: 'flex-start', gap: '10px',
-                background: 'rgba(0,255,128,0.05)',
-                border: '1px solid rgba(0,255,128,0.2)',
-                borderRadius: '6px',
-                padding: '12px 14px',
-                marginBottom: '20px',
-                color: '#00cc66',
-                fontFamily: "'JetBrains Mono', monospace",
-                fontSize: '12px', lineHeight: '1.5',
-              }}>
-                <CheckCircle2 size={14} style={{ flexShrink: 0, marginTop: '1px' }} />
-                {state.message}
-              </div>
-            )}
-
-            {/* Form */}
-            <form action={formAction} ref={formRef} style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-              <div>
-                <label style={{
-                  display: 'block',
-                  fontFamily: "'JetBrains Mono', monospace",
-                  fontSize: '10px', fontWeight: 500,
-                  letterSpacing: '0.12em', color: '#4a6b58',
-                  marginBottom: '7px', textTransform: 'uppercase',
-                }}>
-                  Email
-                </label>
-                <input
-                  className="login-input"
-                  name="email"
-                  type="email"
-                  required
-                  autoComplete="email"
-                  placeholder="you@company.com"
-                />
-              </div>
-
-              <div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '7px' }}>
-                  <label style={{
-                    fontFamily: "'JetBrains Mono', monospace",
-                    fontSize: '10px', fontWeight: 500,
-                    letterSpacing: '0.12em', color: '#4a6b58',
-                    textTransform: 'uppercase',
-                  }}>
-                    Password
-                  </label>
-                </div>
-                <div style={{ position: 'relative' }}>
-                  <input
-                    className="login-input"
-                    name="password"
-                    type={showPw ? 'text' : 'password'}
-                    required
-                    autoComplete={mode === 'signin' ? 'current-password' : 'new-password'}
-                    placeholder="••••••••••"
-                    style={{ paddingRight: '42px' }}
-                  />
-                  <button
-                    type="button"
-                    className="login-eye"
-                    onClick={() => setShowPw(p => !p)}
-                    tabIndex={-1}
-                  >
-                    {showPw ? <EyeOff size={15} /> : <Eye size={15} />}
-                  </button>
-                </div>
-              </div>
-
-              <button type="submit" className="login-submit" disabled={isPending} style={{ marginTop: '4px' }}>
-                {isPending ? (
-                  <>
-                    <div className="login-spinner" />
-                    PROCESSING...
-                  </>
-                ) : mode === 'signin' ? (
-                  <>SIGN IN <ArrowRight size={14} /></>
-                ) : (
-                  <>CREATE ACCOUNT <ArrowRight size={14} /></>
-                )}
-              </button>
-            </form>
-
-            {/* Divider */}
-            <div style={{
-              display: 'flex', alignItems: 'center', gap: '12px',
-              margin: '24px 0',
-            }}>
-              <div style={{ flex: 1, height: '1px', background: 'rgba(0,255,128,0.08)' }} />
-              <span style={{
-                fontFamily: "'JetBrains Mono', monospace",
-                fontSize: '10px', color: '#2d4038',
-                letterSpacing: '0.12em', whiteSpace: 'nowrap',
-              }}>// OR //</span>
-              <div style={{ flex: 1, height: '1px', background: 'rgba(0,255,128,0.08)' }} />
-            </div>
-
-            {/* Google */}
-            <form action={loginWithGoogle}>
-              <button type="submit" className="login-google">
-                <GoogleIcon />
-                Continue with Google
-              </button>
-            </form>
-
-            {/* Footer */}
-            <p style={{
-              marginTop: '24px',
-              textAlign: 'center',
-              fontFamily: "'JetBrains Mono', monospace",
-              fontSize: '10px',
-              color: '#223028',
-              letterSpacing: '0.06em',
-            }}>
-              SECURED · SUPABASE AUTH · END-TO-END ENCRYPTED
-            </p>
-
-          </div>
-        </div>
-
+    <div className="min-h-screen flex flex-col justify-center py-12 sm:px-6 lg:px-8 bg-gradient-to-b from-background via-muted/20 to-background relative overflow-hidden text-foreground">
+      {/* Decorative gradient glowing orb (matches Landing page) */}
+      <div className="absolute inset-x-0 -top-40 -z-10 transform-gpu overflow-hidden blur-3xl sm:-top-80" aria-hidden="true">
+        <div className="relative left-[calc(50%-11rem)] aspect-[1155/678] w-[36.125rem] -translate-x-1/2 rotate-[30deg] bg-gradient-to-tr from-indigo-200 to-primary/20 opacity-30 sm:left-[calc(50%-30rem)] sm:w-[72.1875rem]" />
       </div>
-    </>
+
+      <div className={`sm:mx-auto sm:w-full sm:max-w-md flex flex-col items-center transition-all duration-500 ease-out ${visible ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-4'}`}>
+        {/* Brand Logo */}
+        <Link href="/" className="flex items-center gap-1.5 font-extrabold text-2xl tracking-tight text-foreground hover:opacity-90 transition-all mb-6">
+          <span className="bg-primary text-primary-foreground p-1.5 rounded-lg flex items-center justify-center shadow-sm">
+            <Sparkles className="h-5 w-5 fill-primary-foreground animate-pulse" />
+          </span>
+          <span>ClickVente</span>
+        </Link>
+        <h2 className="text-center text-3xl font-extrabold tracking-tight text-foreground">
+          {mode === 'signin' ? 'Connexion à votre compte' : 'Créer un compte'}
+        </h2>
+        <p className="mt-2 text-center text-sm text-muted-foreground">
+          {mode === 'signin' ? 'Accédez à votre espace ClickVente' : 'Commencez gratuitement dès aujourd\'hui'}
+        </p>
+      </div>
+
+      <div className={`mt-8 sm:mx-auto sm:w-full sm:max-w-md px-4 transition-all duration-500 ease-out delay-75 ${visible ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-4'}`}>
+        <div className="bg-card border border-border/40 shadow-xl rounded-2xl p-6 sm:p-10 relative z-10 backdrop-blur-sm">
+          {/* Tab Selector */}
+          <div className="flex border-b border-border/60 mb-6">
+            <button
+              type="button"
+              onClick={() => switchMode('signin')}
+              className={`flex-1 pb-3 text-sm font-semibold border-b-2 text-center transition-all cursor-pointer ${
+                mode === 'signin'
+                  ? 'border-primary text-foreground'
+                  : 'border-transparent text-muted-foreground hover:text-foreground'
+              }`}
+            >
+              Se connecter
+            </button>
+            <button
+              type="button"
+              onClick={() => switchMode('signup')}
+              className={`flex-1 pb-3 text-sm font-semibold border-b-2 text-center transition-all cursor-pointer ${
+                mode === 'signup'
+                  ? 'border-primary text-foreground'
+                  : 'border-transparent text-muted-foreground hover:text-foreground'
+              }`}
+            >
+              S'inscrire
+            </button>
+          </div>
+
+          {/* Feedback Alerts */}
+          {state?.error && (
+            <div className="mb-5 flex gap-2 items-start bg-red-500/5 border border-red-500/20 text-red-600 dark:text-red-400 rounded-xl p-3.5 text-xs leading-relaxed animate-in fade-in slide-in-from-top-1 duration-200">
+              <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" />
+              <span>{state.error}</span>
+            </div>
+          )}
+
+          {state?.message && (
+            <div className="mb-5 flex gap-2 items-start bg-emerald-500/5 border border-emerald-500/20 text-emerald-600 dark:text-emerald-400 rounded-xl p-3.5 text-xs leading-relaxed animate-in fade-in slide-in-from-top-1 duration-200">
+              <CheckCircle2 className="h-4 w-4 shrink-0 mt-0.5" />
+              <span>{state.message}</span>
+            </div>
+          )}
+
+          {/* Authentication Form */}
+          <form action={formAction} ref={formRef} className="space-y-5">
+            <div>
+              <label htmlFor="email" className="block text-xs font-bold uppercase tracking-wider text-muted-foreground mb-1.5">
+                Adresse e-mail
+              </label>
+              <input
+                id="email"
+                name="email"
+                type="email"
+                required
+                autoComplete="email"
+                placeholder="nom@entreprise.com"
+                className="w-full bg-background border border-border/80 rounded-xl px-4 py-2.5 text-sm text-foreground placeholder:text-muted-foreground/60 outline-none transition-all duration-200 focus:border-primary/80 focus:ring-2 focus:ring-primary/10"
+              />
+            </div>
+
+            <div>
+              <label htmlFor="password" className="block text-xs font-bold uppercase tracking-wider text-muted-foreground mb-1.5">
+                Mot de passe
+              </label>
+              <div className="relative">
+                <input
+                  id="password"
+                  name="password"
+                  type={showPw ? 'text' : 'password'}
+                  required
+                  autoComplete={mode === 'signin' ? 'current-password' : 'new-password'}
+                  placeholder="••••••••"
+                  className="w-full bg-background border border-border/80 rounded-xl pl-4 pr-11 py-2.5 text-sm text-foreground placeholder:text-muted-foreground/60 outline-none transition-all duration-200 focus:border-primary/80 focus:ring-2 focus:ring-primary/10"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPw(p => !p)}
+                  className="absolute right-3.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
+                  tabIndex={-1}
+                >
+                  {showPw ? <EyeOff size={16} /> : <Eye size={16} />}
+                </button>
+              </div>
+            </div>
+
+            <button
+              type="submit"
+              disabled={isPending}
+              className="w-full bg-primary text-primary-foreground rounded-xl py-3 text-sm font-semibold shadow-md shadow-primary/10 hover:bg-primary/95 transition-all transform hover:-translate-y-0.5 active:translate-y-0 disabled:opacity-50 disabled:pointer-events-none flex items-center justify-center gap-2 cursor-pointer mt-6"
+            >
+              {isPending ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  Chargement...
+                </>
+              ) : mode === 'signin' ? (
+                <>
+                  Se connecter
+                  <ArrowRight size={15} />
+                </>
+              ) : (
+                <>
+                  Créer un compte
+                  <ArrowRight size={15} />
+                </>
+              )}
+            </button>
+          </form>
+
+          {/* Divider */}
+          <div className="flex items-center gap-3 my-6">
+            <div className="h-px flex-1 bg-border/60" />
+            <span className="text-xs text-muted-foreground/60 font-medium">Ou continuer avec</span>
+            <div className="h-px flex-1 bg-border/60" />
+          </div>
+
+          {/* OAuth Provider */}
+          <form action={loginWithGoogle}>
+            <button
+              type="submit"
+              className="w-full bg-card hover:bg-muted/50 border border-border/80 rounded-xl py-2.5 text-sm font-medium text-foreground transition-colors flex items-center justify-center gap-2.5 cursor-pointer"
+            >
+              <GoogleIcon />
+              Google
+            </button>
+          </form>
+
+          {/* Secure notice */}
+          <p className="mt-6 text-center text-[10px] text-muted-foreground/60 font-medium uppercase tracking-wider">
+            Sécurisé par Supabase Auth &middot; Données cryptées
+          </p>
+        </div>
+      </div>
+    </div>
   )
 }

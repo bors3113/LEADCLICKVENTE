@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@/utils/supabase/server';
+import { prisma } from '@/lib/prisma';
 import Papa from 'papaparse';
 
 export async function GET(request: Request) {
@@ -13,75 +14,50 @@ export async function GET(request: Request) {
 
     const { searchParams } = new URL(request.url);
     const jobId = searchParams.get('jobId');
+    const format = searchParams.get('format') ?? 'csv';
 
     if (!jobId) {
       return NextResponse.json({ error: 'jobId is required' }, { status: 400 });
     }
 
-    // Fetch extracted records for the job
-    const { data: records, error } = await supabase
-      .from('extracted_records')
-      .select('*')
-      .eq('job_id', jobId);
-
-    if (error) {
-      throw error;
-    }
+    const records = await prisma.extracted_records.findMany({
+      where: { job_id: jobId },
+    });
 
     if (!records || records.length === 0) {
       return NextResponse.json({ error: 'No records found for this job' }, { status: 404 });
     }
 
-    // Format data for CSV
-    const formattedData = records.map(record => ({
-      BusinessName: record.business_name || '',
-      Address: record.address || record.raw_data?.address || '',
-      Phone: record.phone || record.raw_data?.phone || '',
-      Website: record.website || record.raw_data?.link || '',
-      Rating: record.rating || record.raw_data?.rating || '',
-      ExtractedAt: record.created_at,
-    }));
+    const rows = records.map(record => {
+      const raw = (record.raw_data ?? {}) as Record<string, any>;
+      const emails: string[] = raw.contactInfo?.emails ?? [];
+      const social = raw.contactInfo?.socialMedia ?? {};
+      return {
+        BusinessName: record.business_name || raw.name || '',
+        Address: record.address || raw.address || '',
+        Phone: record.phone || raw.phone || '',
+        Website: record.website || raw.link || '',
+        Email: emails.slice(0, 3).join('; '),
+        Facebook: (social.facebook ?? []).join('; '),
+        Instagram: (social.instagram ?? []).join('; '),
+        LinkedIn: (social.linkedin ?? []).join('; '),
+        Rating: record.rating || raw.rating || '',
+        ExtractedAt: record.created_at,
+      };
+    });
 
-    const csvStr = Papa.unparse(formattedData);
-
-    // Upload to Supabase Storage
-    const fileName = `exports/job_${jobId}_${Date.now()}.csv`;
-    
-    // Note: This requires a bucket named 'exports' to exist in Supabase
-    // If the bucket doesn't exist, we can just return the CSV string directly,
-    // but the task specifically says "Integrate Supabase Storage for file exports".
-    
-    const { error: uploadError } = await supabase
-      .storage
-      .from('exports') // Requires bucket setup
-      .upload(fileName, csvStr, {
-        contentType: 'text/csv',
-        upsert: true
-      });
-
-    if (uploadError) {
-      console.error('Storage upload error:', uploadError);
-      
-      // Fallback: Return raw CSV directly if storage upload fails (e.g., bucket missing)
-      return new NextResponse(csvStr, {
-        headers: {
-          'Content-Type': 'text/csv',
-          'Content-Disposition': `attachment; filename="job_${jobId}.csv"`,
-        },
-      });
+    if (format === 'excel' || format === 'sql') {
+      return NextResponse.json({ rows });
     }
 
-    // Get signed URL
-    const { data: signedUrlData, error: signedUrlError } = await supabase
-      .storage
-      .from('exports')
-      .createSignedUrl(fileName, 60 * 60); // 1 hour expiry
-
-    if (signedUrlError) {
-      throw signedUrlError;
-    }
-
-    return NextResponse.json({ url: signedUrlData.signedUrl });
+    // CSV: return directly as download (Supabase Storage removed)
+    const csvStr = Papa.unparse(rows);
+    return new NextResponse(csvStr, {
+      headers: {
+        'Content-Type': 'text/csv',
+        'Content-Disposition': `attachment; filename="job_${jobId}.csv"`,
+      },
+    });
 
   } catch (error: any) {
     console.error('Export Error:', error);

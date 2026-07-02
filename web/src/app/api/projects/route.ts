@@ -1,12 +1,12 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@/utils/supabase/server';
+import { prisma } from '@/lib/prisma';
 
-async function getOrgId(supabase: Awaited<ReturnType<typeof createClient>>, userId: string) {
-  const { data: membership } = await supabase
-    .from('memberships')
-    .select('organization_id')
-    .eq('user_id', userId)
-    .single();
+async function getOrgId(userId: string): Promise<string | null> {
+  const membership = await prisma.memberships.findFirst({
+    where: { user_id: userId },
+    select: { organization_id: true },
+  });
   return membership?.organization_id ?? null;
 }
 
@@ -19,20 +19,18 @@ export async function GET() {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    const orgId = await getOrgId(supabase, user.id);
+    const orgId = await getOrgId(user.id);
     if (!orgId) {
       return NextResponse.json({ projects: [] });
     }
 
-    const { data: projects, error } = await supabase
-      .from('projects')
-      .select('id, name, description, created_at, scraping_jobs(count)')
-      .eq('organization_id', orgId)
-      .order('created_at', { ascending: false });
+    const projects = await prisma.projects.findMany({
+      where: { organization_id: orgId },
+      include: { _count: { select: { scraping_jobs: true } } },
+      orderBy: { created_at: 'desc' },
+    });
 
-    if (error) throw error;
-
-    return NextResponse.json({ projects: projects ?? [] });
+    return NextResponse.json({ projects });
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
@@ -47,7 +45,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    const orgId = await getOrgId(supabase, user.id);
+    const orgId = await getOrgId(user.id);
     if (!orgId) {
       return NextResponse.json({ error: 'No organization found' }, { status: 403 });
     }
@@ -59,13 +57,13 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Project name is required' }, { status: 400 });
     }
 
-    const { data: project, error } = await supabase
-      .from('projects')
-      .insert({ organization_id: orgId, name: name.trim(), description: description?.trim() || null })
-      .select()
-      .single();
-
-    if (error) throw error;
+    const project = await prisma.projects.create({
+      data: {
+        organization_id: orgId,
+        name: name.trim(),
+        description: description?.trim() || null,
+      },
+    });
 
     return NextResponse.json({ project }, { status: 201 });
   } catch (error: any) {
