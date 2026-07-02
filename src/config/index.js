@@ -63,6 +63,12 @@ module.exports = {
         },
         // Default cap for the "capped" cascade scope when no profileCap is supplied.
         cascadeDefaultCap: parseInt(process.env.APIFY_CASCADE_DEFAULT_CAP, 10) || 10,
+        // The linkedin-company-employees actor does NOT crawl at all unless
+        // `maxItems` (or `takePages`) is set on its input — with neither set it
+        // logs a "no limits" warning and exits without scraping anything. This
+        // caps total employees returned per batched run (companies.length * this),
+        // matching the actor's own schema prefill of 25 per company.
+        maxEmployeesPerCompany: parseInt(process.env.APIFY_MAX_EMPLOYEES_PER_COMPANY, 10) || 25,
     },
 
     // Serper (google.serper.dev) is used to resolve each company's official

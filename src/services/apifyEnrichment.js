@@ -267,9 +267,12 @@ async function enrichEmployees(identifiers, { onProgress } = {}) {
     if (deduped.length === 0) return { runId: null, byIdentifier: new Map() };
 
     // "Short" profile mode keeps cost at the low end of the actor's range.
+    // maxItems is required — without it the actor does not crawl at all (see
+    // config.apify.maxEmployeesPerCompany for why).
     const { runId, items } = await runActor(config.apify.employeesActorId, {
         companies: deduped,
         profileScraperMode: 'Short ($4 per 1k)',
+        maxItems: deduped.length * config.apify.maxEmployeesPerCompany,
     }, { onProgress });
 
     // Each employee row nests its company under currentPosition[0] / experience[0].
