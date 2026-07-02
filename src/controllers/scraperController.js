@@ -18,6 +18,10 @@ const scrapeSchema = z.object({
     format: z.enum(['excel', 'csv']).default('excel'),
     globalLimit: z.boolean().default(false),
     tileRings: z.coerce.number().int().min(0).max(5).optional(),
+    // Optional existing job row id (created by the web app's /api/jobs). When
+    // present with a single query, the scraper updates that row rather than
+    // creating its own, so the web dashboard tracks the job in realtime.
+    jobId: z.string().uuid().optional(),
 }).refine(d => d.query || (d.queries && d.queries.length > 0), {
     message: 'Provide query or queries array',
 });
@@ -39,7 +43,7 @@ const scraperController = {
             if (!parsed.success) {
                 return res.status(400).json({ error: parsed.error.issues[0].message });
             }
-            const { query, queries, limit: parsedLimit, format, globalLimit, tileRings } = parsed.data;
+            const { query, queries, limit: parsedLimit, format, globalLimit, tileRings, jobId } = parsed.data;
 
             let searchQueries = [];
             if (queries && queries.length > 0) {
@@ -75,7 +79,10 @@ const scraperController = {
                 }
                 
                 try {
-                    const results = await scrapeInitialData(currentQuery, remainingLimit, format, parsedTileRings);
+                    // Only adopt a caller-supplied jobId when there is a single
+                    // query (the web app submits one job per request).
+                    const adoptJobId = jobId && searchQueries.length === 1 ? jobId : null;
+                    const results = await scrapeInitialData(currentQuery, remainingLimit, format, parsedTileRings, adoptJobId);
                     
                     // Add query identifier to each result
                     const resultsWithQuery = results.map(result => ({
@@ -268,15 +275,39 @@ const scraperController = {
         }
     },
 
-    // Add this function to handle stopping the scraper
+    // Handle stopping the scraper and marking the job as stopped in the DB
     stopScraping(req, res) {
         try {
-            // Call the stopScraping function and ensure it returns a response
+            const { jobId } = req.body || {};
             const result = scraperService.requestStopScraping() || { success: true, message: "Scraping process stopped" };
+            if (jobId) {
+                prisma.scraping_jobs.update({
+                    where: { id: jobId },
+                    data: { status: 'stopped' },
+                }).catch(err => console.error('Failed to mark job stopped:', err.message));
+            }
             res.json(result);
         } catch (error) {
             console.error('Error stopping scraper:', error);
             res.status(500).json({ success: false, message: 'Failed to stop scraping process' });
+        }
+    },
+
+    // Handle pausing the scraper and marking the job as paused in the DB
+    async pauseScraping(req, res) {
+        try {
+            const { jobId } = req.body || {};
+            scraperService.requestStopScraping();
+            if (jobId) {
+                await prisma.scraping_jobs.update({
+                    where: { id: jobId },
+                    data: { status: 'paused' },
+                });
+            }
+            res.json({ success: true, message: 'Scraping paused' });
+        } catch (error) {
+            console.error('Error pausing scraper:', error);
+            res.status(500).json({ success: false, message: 'Failed to pause scraping process' });
         }
     },
     
@@ -331,7 +362,7 @@ const scraperController = {
         }
 
         try {
-            const { enrichedCount, creditsByType, outputPath } = await enrichScrapedFile(filename, types);
+            const { enrichedCount, creditsByType, outputPath, r2Key } = await enrichScrapedFile(filename, types);
 
             const outputBasename = path.basename(outputPath);
 
@@ -374,6 +405,7 @@ const scraperController = {
                 jobId: jobRecord?.id || null,
                 fileName: outputBasename,
                 downloadUrl: `/api/download?file=${outputBasename}`,
+                r2Key: r2Key || null,
                 enrichedCount,
                 creditsByType,
                 creditsCharged,

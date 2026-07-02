@@ -364,6 +364,15 @@ function formatSearchQuery(query) {
                 processedLinks.add(result.link);
                 incrementScrapedCount();
 
+                // Stream the live scraped count to the job row every few records
+                // so the web dashboard's realtime progress bar ticks up mid-run.
+                if (currentJobId && scrapedItemsCount % 3 === 0) {
+                    prisma.scraping_jobs.update({
+                        where: { id: currentJobId },
+                        data: { progress: scrapedItemsCount },
+                    }).catch(err => console.error('Failed to stream job progress:', err.message));
+                }
+
                 // Persist extracted record to database
                 if (currentJobId) {
                     prisma.extracted_records.create({
@@ -815,30 +824,51 @@ async function navigateTiles(page, query, startCenter, limit = null, ringCount =
 }
 
 
-async function scrapeInitialData(searchQuery, limit = null, format = 'excel', tileRings = config.scraper.tileRings) {
+async function scrapeInitialData(searchQuery, limit = null, format = 'excel', tileRings = config.scraper.tileRings, existingJobId = null) {
     console.log('Starting initial scraping...');
-    
+
     // Reset stop flag and scraping stats at the beginning of a new scrape
     resetStopRequest();
     resetScrapingStats();
-    
+
     // Set current query and scraping status
     currentScrapingQuery = searchQuery;
     isScrapingActive = true;
 
-    // Persist job to database
-    try {
-        const job = await prisma.scraping_jobs.create({
-            data: {
-                status: 'running',
-                config: { query: searchQuery, limit: limit ?? null, format },
-            },
-        });
-        currentJobId = job.id;
-        console.log(`Created scraping job: ${currentJobId}`);
-    } catch (dbErr) {
-        console.error('Failed to create scraping job in DB (continuing without persistence):', dbErr.message);
-        currentJobId = null;
+    // Persist job to database.
+    // If the caller already created a job row (e.g. the web app's /api/jobs
+    // inserted a 'queued' row and handed us its id), adopt that row and flip it
+    // to 'running' instead of creating a duplicate — so the web UI's realtime
+    // table tracks the same job through to completion.
+    if (existingJobId) {
+        currentJobId = existingJobId;
+        try {
+            await prisma.scraping_jobs.update({
+                where: { id: existingJobId },
+                data: {
+                    status: 'running',
+                    progress: 0,
+                    config: { query: searchQuery, limit: limit ?? null, format },
+                },
+            });
+            console.log(`Adopted existing scraping job: ${currentJobId}`);
+        } catch (dbErr) {
+            console.error('Failed to mark existing scraping job as running:', dbErr.message);
+        }
+    } else {
+        try {
+            const job = await prisma.scraping_jobs.create({
+                data: {
+                    status: 'running',
+                    config: { query: searchQuery, limit: limit ?? null, format },
+                },
+            });
+            currentJobId = job.id;
+            console.log(`Created scraping job: ${currentJobId}`);
+        } catch (dbErr) {
+            console.error('Failed to create scraping job in DB (continuing without persistence):', dbErr.message);
+            currentJobId = null;
+        }
     }
 
     // Initialize real-time exporter
@@ -1798,7 +1828,7 @@ async function saveDataToJson(data, filePath = 'data/scraped_data.json') {
 async function enrichScrapedFile(filename, types) {
     const XLSX = require('xlsx');
     const { exportToExcel, exportToCSV } = require('../utils/excelExporter');
-    const { enrichCompany, enrichEmployees, enrichProfiles, normalizeKey, normalizeLinkedinUrl } = require('./apifyEnrichment');
+    const { enrichCompany, enrichEmployees, enrichProfiles, normalizeKey } = require('./apifyEnrichment');
 
     const sanitized = path.basename(filename);
     const inputPath = path.join(process.cwd(), 'results', sanitized);
@@ -1816,37 +1846,52 @@ async function enrichScrapedFile(filename, types) {
         throw new Error('Source file contains no rows.');
     }
 
-    // Collect identifiers per actor type, deduplicated.
+    // Helpers to read a row's company website / name across the possible column
+    // spellings the exporter may have produced.
+    const rowWebsite = (row) => String(row.website || row.Website || '').trim();
+    const rowName = (row) =>
+        String(row.business_name || row['Business Name'] || row.name || row.Name || '').trim();
+    const rowFirstProfileUrl = (row) => {
+        const linkedinLinks = String(row.linkedin_links || row['LinkedIn Links'] || '').trim();
+        const firstLink = linkedinLinks.split(',')[0].trim();
+        return firstLink && firstLink.includes('linkedin.com/in/') ? firstLink : '';
+    };
+    // Stable key used both to send identifiers to the actors and to look results
+    // back up when merging onto rows.
+    const rowKey = (row) => normalizeKey(rowWebsite(row) || rowName(row));
+
+    // Collect structured identifiers per company, deduplicated by key.
     const companyIdentifiers = [];
+    const seenKeys = new Set();
     const profileUrls = [];
 
     for (const row of rows) {
-        // Company + employees actors both accept website or business name.
-        const companyId = (row.website || row.Website || row.business_name || row['Business Name'] || row.name || row.Name || '').trim();
-        if (companyId) companyIdentifiers.push(companyId);
-
-        // Profile actor needs a LinkedIn profile URL.
-        // The scraper stores these in linkedin_links (comma-separated) or socialMedia.linkedin.
-        const linkedinLinks = (row.linkedin_links || row['LinkedIn Links'] || '').trim();
-        const firstLink = linkedinLinks.split(',')[0].trim();
-        if (firstLink && firstLink.includes('linkedin.com/in/')) {
-            profileUrls.push(firstLink);
+        const key = rowKey(row);
+        if (key && !seenKeys.has(key)) {
+            seenKeys.add(key);
+            companyIdentifiers.push({ key, website: rowWebsite(row), name: rowName(row) });
         }
+        const firstLink = rowFirstProfileUrl(row);
+        if (firstLink) profileUrls.push(firstLink);
     }
 
     const results = {};
     const creditsByType = {};
 
     if (types.includes('company') && companyIdentifiers.length > 0) {
-        const { byIdentifier } = await enrichCompany([...new Set(companyIdentifiers.map(normalizeKey))]);
+        const { byIdentifier } = await enrichCompany(companyIdentifiers);
         results.company = byIdentifier;
         creditsByType.company = byIdentifier.size;
     }
 
-    if (types.includes('employees') && companyIdentifiers.length > 0) {
-        const { byIdentifier } = await enrichEmployees([...new Set(companyIdentifiers.map(normalizeKey))]);
+    // Employees are fetched when explicitly requested, or as the source for
+    // profile data when the rows carry no LinkedIn profile URLs of their own.
+    const wantEmployees = types.includes('employees');
+    const profileNeedsEmployees = types.includes('profile') && profileUrls.length === 0;
+    if ((wantEmployees || profileNeedsEmployees) && companyIdentifiers.length > 0) {
+        const { byIdentifier } = await enrichEmployees(companyIdentifiers);
         results.employees = byIdentifier;
-        creditsByType.employees = byIdentifier.size;
+        if (wantEmployees) creditsByType.employees = byIdentifier.size;
     }
 
     if (types.includes('profile') && profileUrls.length > 0) {
@@ -1855,38 +1900,59 @@ async function enrichScrapedFile(filename, types) {
         creditsByType.profile = byIdentifier.size;
     }
 
+    // First LinkedIn company location, formatted as a headquarters string.
+    const formatHeadquarters = (d) => {
+        if (d.headquartersAddress) return d.headquartersAddress;
+        const loc = Array.isArray(d.locations) ? d.locations[0] : null;
+        if (!loc) return '';
+        return [loc.city, loc.geographicArea || loc.region, loc.country]
+            .filter(Boolean).join(', ');
+    };
+
     // Merge enrichment data onto each row as flat new columns.
+    // enrichedCount tracks how many rows actually gained ≥1 li_* field.
+    let enrichedCount = 0;
     const enrichedRows = rows.map(row => {
         const merged = { ...row };
+        let rowEnriched = false;
 
-        const companyKey = normalizeKey(
-            row.website || row.Website || row.business_name || row['Business Name'] || row.name || row.Name || ''
-        );
+        const companyKey = rowKey(row);
+        const includeProfile = types.includes('profile');
 
         if (results.company && results.company.has(companyKey)) {
             const d = results.company.get(companyKey);
+            // industries may be strings or objects like { name } / { label }.
+            const industryNames = (d.industries || []).map(ind =>
+                typeof ind === 'string' ? ind : (ind && (ind.name || ind.label || ind.value)) || ''
+            ).filter(Boolean);
             merged.li_company_name = d.name || '';
-            merged.li_company_industry = (d.industries || []).join(', ');
+            merged.li_company_industry = industryNames.join(', ');
             merged.li_company_employee_count = d.employeeCount || '';
             merged.li_company_founded = d.foundedOn || '';
-            merged.li_company_headquarters = d.headquartersAddress || '';
+            merged.li_company_headquarters = formatHeadquarters(d);
             merged.li_company_follower_count = d.followerCount || '';
             merged.li_company_url = d.linkedinUrl || '';
             merged.li_company_website = d.website || '';
             merged.li_company_description = d.tagline || d.description || '';
+            rowEnriched = true;
         }
 
-        if (results.employees && results.employees.has(companyKey)) {
-            const employees = results.employees.get(companyKey) || [];
+        const employees = results.employees && results.employees.has(companyKey)
+            ? (results.employees.get(companyKey) || [])
+            : [];
+
+        if (types.includes('employees') && employees.length > 0) {
             merged.li_employees = employees
                 .map(e => [e.firstName, e.lastName, e.headline, e.linkedinUrl].filter(Boolean).join(' | '))
                 .join('; ');
             merged.li_employee_count_scraped = employees.length;
+            rowEnriched = true;
         }
 
-        const linkedinLinks = (row.linkedin_links || row['LinkedIn Links'] || '').trim();
-        const firstLink = linkedinLinks.split(',')[0].trim();
-        if (results.profile && firstLink && results.profile.has(firstLink)) {
+        // Profile: prefer a real profile-actor result for the row's own LinkedIn
+        // URL; otherwise fall back to the first employee we found for the company.
+        const firstLink = rowFirstProfileUrl(row);
+        if (includeProfile && results.profile && firstLink && results.profile.has(firstLink)) {
             const p = results.profile.get(firstLink);
             merged.li_profile_name = p.fullName || [p.firstName, p.lastName].filter(Boolean).join(' ');
             merged.li_profile_headline = p.headline || '';
@@ -1896,15 +1962,25 @@ async function enrichScrapedFile(filename, types) {
             merged.li_profile_phone = (p.phones || []).map(ph => ph.phone || ph).join(', ');
             merged.li_profile_location = p.location || '';
             merged.li_profile_url = p.linkedinUrl || firstLink;
+            rowEnriched = true;
+        } else if (includeProfile && employees.length > 0) {
+            const e = employees[0];
+            const currentCompany = Array.isArray(e.currentPosition) && e.currentPosition[0]
+                ? e.currentPosition[0].companyName : '';
+            merged.li_profile_name = [e.firstName, e.lastName].filter(Boolean).join(' ');
+            merged.li_profile_headline = e.headline || '';
+            merged.li_profile_title = e.headline || '';
+            merged.li_profile_company = currentCompany || '';
+            merged.li_profile_email = '';
+            merged.li_profile_phone = '';
+            merged.li_profile_location = e.location || '';
+            merged.li_profile_url = e.linkedinUrl || '';
+            rowEnriched = true;
         }
 
+        if (rowEnriched) enrichedCount++;
         return merged;
     });
-
-    const enrichedCount =
-        (results.company ? results.company.size : 0) +
-        (results.employees ? results.employees.size : 0) +
-        (results.profile ? results.profile.size : 0);
 
     // Re-export enriched data with a _linkedin suffix.
     const ext = path.extname(sanitized).toLowerCase();
@@ -1918,7 +1994,18 @@ async function enrichScrapedFile(filename, types) {
         outputPath = exportToExcel(enrichedRows, outputName);
     }
 
-    return { enrichedRows, enrichedCount, creditsByType, outputPath };
+    // Persist the enriched file to R2 under an `enriched/` prefix so the web app
+    // can list/download it. Best-effort: a failed upload must not fail the job,
+    // the local copy in results/ is still served by /api/download as a fallback.
+    const { uploadToR2 } = require('../lib/r2');
+    let r2Key = null;
+    try {
+        r2Key = await uploadToR2(outputPath, `enriched/${path.basename(outputPath)}`);
+    } catch (r2Err) {
+        console.warn('Enriched R2 upload failed (non-fatal):', r2Err.message);
+    }
+
+    return { enrichedRows, enrichedCount, creditsByType, outputPath, r2Key };
 }
 
 // Export the control functions

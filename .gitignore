@@ -1,5 +1,7 @@
 node_modules/
-results/
+# Scraper output directory at the repo root only — not the Next.js
+# `web/src/app/dashboard/results/` route folder.
+/results/
 .env
 debug_*.html
 debug_*.png
