@@ -4,6 +4,8 @@ import { stripe } from '@/utils/stripe/server';
 import { prisma } from '@/lib/prisma';
 import Stripe from 'stripe';
 
+const PRO_MONTHLY_CREDIT_GRANT = 1000;
+
 export async function POST(req: Request) {
   const body = await req.text();
   const headersList = await headers();
@@ -47,7 +49,10 @@ export async function POST(req: Request) {
 
             await prisma.organizations.update({
               where: { id: orgId },
-              data: { stripe_customer_id: customerId },
+              data: {
+                stripe_customer_id: customerId,
+                enrichment_credit_balance: { increment: PRO_MONTHLY_CREDIT_GRANT },
+              },
             });
           }
         }
@@ -61,6 +66,7 @@ export async function POST(req: Request) {
               [process.env.NEXT_PUBLIC_STRIPE_ENRICH_500_PRICE_ID || '']: 500,
               [process.env.NEXT_PUBLIC_STRIPE_ENRICH_2000_PRICE_ID || '']: 2000,
               [process.env.NEXT_PUBLIC_STRIPE_ENRICH_5000_PRICE_ID || '']: 5000,
+              [process.env.NEXT_PUBLIC_STRIPE_ENRICH_10000_PRICE_ID || '']: 10000,
             };
 
             const creditsToAdd = TOPUP_CREDITS[priceId] ?? 0;
@@ -68,6 +74,32 @@ export async function POST(req: Request) {
               await prisma.organizations.update({
                 where: { id: orgId },
                 data: { enrichment_credit_balance: { increment: creditsToAdd } },
+              });
+            }
+          }
+        }
+        break;
+      }
+
+      case 'invoice.paid': {
+        const invoice = event.data.object as Stripe.Invoice;
+
+        // Only grant credits on renewals — the initial subscription invoice
+        // is already covered by checkout.session.completed above, and
+        // crediting both would double-grant on signup.
+        if (invoice.billing_reason === 'subscription_cycle') {
+          const subscriptionRef = invoice.parent?.subscription_details?.subscription;
+          const subscriptionId = typeof subscriptionRef === 'string' ? subscriptionRef : subscriptionRef?.id;
+          if (subscriptionId) {
+            const dbSubscription = await prisma.subscriptions.findUnique({
+              where: { stripe_sub_id: subscriptionId },
+              select: { organization_id: true },
+            });
+
+            if (dbSubscription) {
+              await prisma.organizations.update({
+                where: { id: dbSubscription.organization_id },
+                data: { enrichment_credit_balance: { increment: PRO_MONTHLY_CREDIT_GRANT } },
               });
             }
           }

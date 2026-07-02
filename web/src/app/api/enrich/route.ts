@@ -61,11 +61,16 @@ export async function POST(request: Request) {
 
     // Pass the backend status through — notably 402 (insufficient credits) so the
     // UI can prompt the user to buy more, using result.required/available/shortfall.
+    // On success the backend responds as soon as the job is created (202) and
+    // keeps enriching in the background — see runEnrichmentJob in
+    // scraperController.js — so this resolves quickly regardless of how long
+    // the underlying Apify run takes. The frontend polls GET
+    // /api/enrich/status?jobId= for progress instead of waiting on this call.
     if (!backendRes.ok) {
       return NextResponse.json(result, { status: backendRes.status });
     }
 
-    return NextResponse.json(result);
+    return NextResponse.json(result, { status: backendRes.status });
 
   } catch (error: any) {
     console.error('Enrich API error:', error);

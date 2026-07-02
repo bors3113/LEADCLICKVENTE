@@ -150,6 +150,14 @@ export function LoginForm() {
               </div>
             </div>
 
+            {mode === 'signin' && (
+              <div className="flex justify-end -mt-2">
+                <Link href="/forgot-password" className="text-xs font-medium text-primary hover:underline">
+                  Mot de passe oublié ?
+                </Link>
+              </div>
+            )}
+
             <button
               type="submit"
               disabled={isPending}

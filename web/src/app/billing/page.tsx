@@ -36,6 +36,7 @@ export default async function BillingPage() {
   const enrich500PriceId = process.env.NEXT_PUBLIC_STRIPE_ENRICH_500_PRICE_ID ?? '';
   const enrich2000PriceId = process.env.NEXT_PUBLIC_STRIPE_ENRICH_2000_PRICE_ID ?? '';
   const enrich5000PriceId = process.env.NEXT_PUBLIC_STRIPE_ENRICH_5000_PRICE_ID ?? '';
+  const enrich10000PriceId = process.env.NEXT_PUBLIC_STRIPE_ENRICH_10000_PRICE_ID ?? '';
 
   return (
     <div className="mx-auto max-w-6xl px-4 py-8 sm:px-6 lg:px-8">
@@ -94,10 +95,10 @@ export default async function BillingPage() {
               <h3 className="text-xs font-medium text-foreground tracking-wide uppercase">What&apos;s included</h3>
               <ul className="mt-6 space-y-4">
                 <li className="flex space-x-3 text-sm text-muted-foreground">
-                  <span className="text-green-500">✓</span> 10,000 Extractions / mo
+                  <span className="text-green-500">✓</span> Unlimited Maps scraping
                 </li>
                 <li className="flex space-x-3 text-sm text-muted-foreground">
-                  <span className="text-green-500">✓</span> API Access
+                  <span className="text-green-500">✓</span> 1,000 enrichment credits / mo
                 </li>
                 <li className="flex space-x-3 text-sm text-muted-foreground">
                   <span className="text-green-500">✓</span> CSV/Excel Exports
@@ -140,7 +141,7 @@ export default async function BillingPage() {
           <div><div className="font-medium text-foreground text-lg">2 + 5/profile</div><div>Cascade — decision-makers</div></div>
         </div>
 
-        <div className="space-y-4 sm:space-y-0 sm:grid sm:grid-cols-3 sm:gap-6 lg:max-w-4xl lg:mx-auto">
+        <div className="space-y-4 sm:space-y-0 sm:grid sm:grid-cols-2 sm:gap-6 lg:max-w-5xl lg:mx-auto xl:grid-cols-4">
 
           {/* 500 credits */}
           <div className="border border-border rounded-lg shadow-sm divide-y divide-border bg-background">
@@ -148,7 +149,7 @@ export default async function BillingPage() {
               <h3 className="text-lg font-medium text-foreground">Starter Pack</h3>
               <p className="mt-2 text-sm text-muted-foreground">Good for testing enrichment on a campaign.</p>
               <p className="mt-6">
-                <span className="text-3xl font-extrabold text-foreground">$8</span>
+                <span className="text-3xl font-extrabold text-foreground">$6</span>
                 <span className="text-sm text-muted-foreground"> one-time</span>
               </p>
               <p className="text-sm text-muted-foreground mt-1">500 enrichment credits</p>
@@ -167,15 +168,12 @@ export default async function BillingPage() {
           </div>
 
           {/* 2000 credits */}
-          <div className="border border-primary rounded-lg shadow-md divide-y divide-border bg-background relative">
-            <div className="absolute top-0 right-0 bg-primary text-primary-foreground px-3 py-1 rounded-bl-lg rounded-tr-lg text-xs font-bold uppercase tracking-wider">
-              Best Value
-            </div>
+          <div className="border border-border rounded-lg shadow-sm divide-y divide-border bg-background">
             <div className="p-6">
               <h3 className="text-lg font-medium text-foreground">Growth Pack</h3>
               <p className="mt-2 text-sm text-muted-foreground">Enrich a full campaign at scale.</p>
               <p className="mt-6">
-                <span className="text-3xl font-extrabold text-foreground">$28</span>
+                <span className="text-3xl font-extrabold text-foreground">$20</span>
                 <span className="text-sm text-muted-foreground"> one-time</span>
               </p>
               <p className="text-sm text-muted-foreground mt-1">2,000 enrichment credits</p>
@@ -194,12 +192,15 @@ export default async function BillingPage() {
           </div>
 
           {/* 5000 credits */}
-          <div className="border border-border rounded-lg shadow-sm divide-y divide-border bg-background">
+          <div className="border border-primary rounded-lg shadow-md divide-y divide-border bg-background relative">
+            <div className="absolute top-0 right-0 bg-primary text-primary-foreground px-3 py-1 rounded-bl-lg rounded-tr-lg text-xs font-bold uppercase tracking-wider">
+              Best Value
+            </div>
             <div className="p-6">
-              <h3 className="text-lg font-medium text-foreground">Agency Pack</h3>
-              <p className="mt-2 text-sm text-muted-foreground">High-volume enrichment for agencies.</p>
+              <h3 className="text-lg font-medium text-foreground">Scale Pack</h3>
+              <p className="mt-2 text-sm text-muted-foreground">High-volume enrichment for growing teams.</p>
               <p className="mt-6">
-                <span className="text-3xl font-extrabold text-foreground">$60</span>
+                <span className="text-3xl font-extrabold text-foreground">$40</span>
                 <span className="text-sm text-muted-foreground"> one-time</span>
               </p>
               <p className="text-sm text-muted-foreground mt-1">5,000 enrichment credits</p>
@@ -216,10 +217,34 @@ export default async function BillingPage() {
               )}
             </div>
           </div>
+
+          {/* 10000 credits */}
+          <div className="border border-border rounded-lg shadow-sm divide-y divide-border bg-background">
+            <div className="p-6">
+              <h3 className="text-lg font-medium text-foreground">Agency Pack</h3>
+              <p className="mt-2 text-sm text-muted-foreground">Maximum volume for agencies and lead-gen teams.</p>
+              <p className="mt-6">
+                <span className="text-3xl font-extrabold text-foreground">$70</span>
+                <span className="text-sm text-muted-foreground"> one-time</span>
+              </p>
+              <p className="text-sm text-muted-foreground mt-1">10,000 enrichment credits</p>
+              {enrich10000PriceId ? (
+                <form action={createEnrichmentTopupCheckout.bind(null, enrich10000PriceId, orgId)}>
+                  <button type="submit" className="mt-6 block w-full bg-primary border border-transparent rounded-md py-2 text-sm font-semibold text-primary-foreground text-center hover:bg-primary/90 transition">
+                    Buy 10,000 credits
+                  </button>
+                </form>
+              ) : (
+                <button disabled className="mt-6 block w-full bg-muted rounded-md py-2 text-sm font-semibold text-muted-foreground text-center cursor-not-allowed">
+                  Coming soon
+                </button>
+              )}
+            </div>
+          </div>
         </div>
 
         <p className="mt-6 text-xs text-muted-foreground text-center">
-          Credits are non-expiring and charged only on successful enrichment. 1 credit ≈ $0.012–0.016 depending on pack.
+          Credits are non-expiring and charged only on successful enrichment. 1 credit ≈ $0.007–0.012 depending on pack.
           Powered by <a href="https://apify.com" target="_blank" rel="noopener noreferrer" className="underline">Apify</a>.
         </p>
       </div>

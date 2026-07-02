@@ -177,10 +177,38 @@ function partitionForSearch(identifiers) {
     return { companies: [...new Set(companies)], searches: [...new Set(searches)] };
 }
 
-async function runActor(actorId, input) {
+const TERMINAL_RUN_STATUSES = new Set(['SUCCEEDED', 'FAILED', 'ABORTED', 'TIMED-OUT']);
+const RUN_POLL_INTERVAL_MS = 3000;
+
+// Runs an Apify actor to completion, polling the run status (and therefore its
+// dataset's growing item count) instead of using the client's built-in
+// `.call()`, which only resolves once at the very end. This lets callers
+// report a real, incrementing "N items scraped so far" via onProgress while
+// the actor is still running — .call() gives no such signal mid-run.
+async function runActor(actorId, input, { onProgress } = {}) {
     const apify = getClient();
-    const run = await apify.actor(actorId).call(input);
+    const startedRun = await apify.actor(actorId).start(input);
+
+    let run = startedRun;
+    while (!TERMINAL_RUN_STATUSES.has(run.status)) {
+        await new Promise((resolve) => setTimeout(resolve, RUN_POLL_INTERVAL_MS));
+        run = await apify.run(startedRun.id).get();
+        if (onProgress && run.defaultDatasetId) {
+            try {
+                const dataset = await apify.dataset(run.defaultDatasetId).get();
+                onProgress(dataset.itemCount || 0);
+            } catch (_) {
+                // Best-effort progress reporting — never fail the run over this.
+            }
+        }
+    }
+
+    if (run.status !== 'SUCCEEDED') {
+        throw new Error(`Apify actor ${actorId} run ${run.status.toLowerCase()} (runId: ${run.id})`);
+    }
+
     const { items } = await apify.dataset(run.defaultDatasetId).listItems();
+    if (onProgress) onProgress(items.length);
     return { runId: run.id, items };
 }
 
@@ -189,7 +217,7 @@ async function runActor(actorId, input) {
  * @param {{key:string, website:string, name:string}[]} identifiers - deduped by caller
  * @returns {Promise<{runId:string|null, byIdentifier:Map<string,object>}>}
  */
-async function enrichCompany(identifiers) {
+async function enrichCompany(identifiers, { onProgress } = {}) {
     const ids = (identifiers || []).filter(id => id && id.key);
     if (ids.length === 0) return { runId: null, byIdentifier: new Map() };
 
@@ -198,7 +226,7 @@ async function enrichCompany(identifiers) {
         return { runId: null, byIdentifier: new Map() };
     }
 
-    const { runId, items } = await runActor(config.apify.companyActorId, { companies, searches });
+    const { runId, items } = await runActor(config.apify.companyActorId, { companies, searches }, { onProgress });
 
     const byIdentifier = new Map();
     for (const item of items) {
@@ -220,7 +248,7 @@ async function enrichCompany(identifiers) {
  * @param {{key:string, website:string, name:string}[]} identifiers
  * @returns {Promise<{runId:string|null, byIdentifier:Map<string,object[]>}>}
  */
-async function enrichEmployees(identifiers) {
+async function enrichEmployees(identifiers, { onProgress } = {}) {
     const ids = (identifiers || []).filter(id => id && id.key);
     if (ids.length === 0) return { runId: null, byIdentifier: new Map() };
 
@@ -238,11 +266,11 @@ async function enrichEmployees(identifiers) {
     const deduped = [...new Set(companies)];
     if (deduped.length === 0) return { runId: null, byIdentifier: new Map() };
 
-    // "short" profile mode keeps cost at the low end of the actor's range.
+    // "Short" profile mode keeps cost at the low end of the actor's range.
     const { runId, items } = await runActor(config.apify.employeesActorId, {
         companies: deduped,
-        profileScraperMode: 'short',
-    });
+        profileScraperMode: 'Short ($4 per 1k)',
+    }, { onProgress });
 
     // Each employee row nests its company under currentPosition[0] / experience[0].
     // Match on the company's LinkedIn URL / name and group employees by identifier.
@@ -280,7 +308,7 @@ async function enrichEmployees(identifiers) {
  * Enrich individual LinkedIn profiles via harvestapi/linkedin-profile-scraper.
  * @param {string[]} profileUrls - LinkedIn profile URLs
  */
-async function enrichProfiles(profileUrls) {
+async function enrichProfiles(profileUrls, { onProgress } = {}) {
     const clean = [...new Set((profileUrls || []).map(u => String(u || '').trim()).filter(Boolean))];
     if (clean.length === 0) return { runId: null, byIdentifier: new Map() };
 
@@ -288,7 +316,7 @@ async function enrichProfiles(profileUrls) {
     const { runId, items } = await runActor(config.apify.profileActorId, {
         profileScraperMode: 'Profile details no email ($4 per 1k)',
         urls: clean,
-    });
+    }, { onProgress });
 
     // This actor does not echo the input URL back; it returns its own canonical
     // `linkedinUrl` per profile, so match on that (normalized) instead.

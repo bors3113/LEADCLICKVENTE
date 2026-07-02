@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import { KeyRound, Copy, Trash2, Check, Download } from 'lucide-react';
+import { KeyRound, Copy, Trash2, Check, Download, ChevronDown } from 'lucide-react';
 
 type ApiKey = {
   id: string;
@@ -25,6 +25,7 @@ export default function ApiKeysSection() {
   const [newKey, setNewKey] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [showTutorial, setShowTutorial] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -94,18 +95,85 @@ export default function ApiKeysSection() {
         Use API keys to connect the LinkedIn Copilot Chrome extension. Each draft costs 1 enrichment credit.
       </p>
 
-      <a
-        href="/api/extension/download"
-        className="mb-4 inline-flex items-center gap-2 bg-muted text-foreground px-4 py-2 rounded-md text-sm font-semibold hover:bg-muted/70 transition border border-border"
-      >
-        <Download className="h-4 w-4" />
-        Download extension (.zip)
-      </a>
-      <ol className="mb-6 list-decimal list-inside text-xs text-muted-foreground space-y-0.5">
-        <li>Unzip the file, then open <code className="bg-muted/50 px-1 rounded">chrome://extensions</code> and enable <strong>Developer mode</strong>.</li>
-        <li>Click <strong>Load unpacked</strong> and select the unzipped <code className="bg-muted/50 px-1 rounded">extension</code> folder.</li>
-        <li>Create an API key below, then paste it into the extension&apos;s options page.</li>
-      </ol>
+      <div className="mb-6 flex flex-wrap items-center gap-2">
+        <a
+          href="/api/extension/download"
+          className="inline-flex items-center gap-2 bg-muted text-foreground px-4 py-2 rounded-md text-sm font-semibold hover:bg-muted/70 transition border border-border"
+        >
+          <Download className="h-4 w-4" />
+          Download extension (.zip)
+        </a>
+        <button
+          type="button"
+          onClick={() => setShowTutorial((v) => !v)}
+          className="inline-flex items-center gap-1 text-sm font-medium text-primary hover:text-primary/80 transition"
+        >
+          <ChevronDown className={`h-4 w-4 transition-transform ${showTutorial ? 'rotate-180' : ''}`} />
+          {showTutorial ? 'Hide' : 'Show'} manual install tutorial
+        </button>
+      </div>
+
+      {showTutorial && (
+        <div className="mb-6 rounded-md border border-border bg-muted/20 p-4">
+          <h3 className="text-sm font-semibold text-foreground mb-3">
+            How to install the extension manually
+          </h3>
+          <ol className="list-decimal list-inside text-sm text-muted-foreground space-y-3">
+            <li>
+              <span className="text-foreground font-medium">Download and unzip.</span>{' '}
+              Click <strong>Download extension (.zip)</strong> above, then unzip it
+              anywhere on your computer (e.g. your Desktop). Keep the folder — Chrome
+              loads the extension from it directly, so don&apos;t delete it after
+              installing.
+            </li>
+            <li>
+              <span className="text-foreground font-medium">Open the extensions page.</span>{' '}
+              In Chrome (or any Chromium browser — Edge, Brave), go to{' '}
+              <code className="bg-muted/50 px-1 rounded">chrome://extensions</code>, or
+              menu → <strong>More tools → Extensions</strong>.
+            </li>
+            <li>
+              <span className="text-foreground font-medium">Enable Developer mode.</span>{' '}
+              Toggle <strong>Developer mode</strong> in the top-right corner of the
+              extensions page.
+            </li>
+            <li>
+              <span className="text-foreground font-medium">Load the extension.</span>{' '}
+              Click <strong>Load unpacked</strong> (top-left) and select the unzipped{' '}
+              <code className="bg-muted/50 px-1 rounded">extension</code> folder — pick
+              the folder itself, the one containing{' '}
+              <code className="bg-muted/50 px-1 rounded">manifest.json</code>, not the
+              zip file.
+            </li>
+            <li>
+              <span className="text-foreground font-medium">Create an API key.</span>{' '}
+              Use the form below to create a key (e.g. name it &quot;My Chrome
+              extension&quot;) and copy it — it&apos;s only shown once.
+            </li>
+            <li>
+              <span className="text-foreground font-medium">Configure the extension.</span>{' '}
+              Click the extensions puzzle-piece icon in Chrome&apos;s toolbar, find{' '}
+              <strong>LeadClickVente LinkedIn Copilot</strong>, and open its{' '}
+              <strong>Options</strong> (right-click the icon → Options, or the Details
+              button on the extensions page → Extension options). Paste your API key,
+              set the backend URL, and click <strong>Test connection</strong> to
+              confirm it works.
+            </li>
+            <li>
+              <span className="text-foreground font-medium">Use it.</span>{' '}
+              Visit any LinkedIn profile at{' '}
+              <code className="bg-muted/50 px-1 rounded">linkedin.com/in/...</code> and
+              click the <strong>AI Copilot</strong> button in the bottom-right corner
+              to draft a message. Nothing is ever sent automatically — you always
+              review and click Send yourself.
+            </li>
+          </ol>
+          <p className="mt-4 text-xs text-muted-foreground">
+            Tip: Chrome disables unpacked extensions after an update sometimes — if it
+            stops working, revisit <code className="bg-muted/50 px-1 rounded">chrome://extensions</code> and toggle it back on.
+          </p>
+        </div>
+      )}
 
       {newKey && (
         <div className="mb-4 rounded-md border border-primary/40 bg-primary/5 p-4">

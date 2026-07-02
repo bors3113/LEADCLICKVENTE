@@ -1995,7 +1995,7 @@ async function enrichScrapedFile(filename, types, options = {}) {
     const { exportToExcel, exportToCSV } = require('../utils/excelExporter');
     const { enrichEmployees, enrichProfiles } = require('./apifyEnrichment');
 
-    const { scope = 'all', profileCap, plannedCascade = null } = options;
+    const { scope = 'all', profileCap, plannedCascade = null, onProgress } = options;
     const cap = Number.isInteger(profileCap) && profileCap > 0
         ? profileCap : config.apify.cascadeDefaultCap;
 
@@ -2012,8 +2012,9 @@ async function enrichScrapedFile(filename, types, options = {}) {
     const wantEmployees = types.includes('employees');
     if (includeProfile && plannedCascade && plannedCascade.employeesByKey) {
         results.employees = plannedCascade.employeesByKey;
+        if (onProgress) onProgress(plannedCascade.employeesByKey.size);
     } else if ((wantEmployees || includeProfile) && companyIdentifiers.length > 0) {
-        const { byIdentifier } = await enrichEmployees(companyIdentifiers);
+        const { byIdentifier } = await enrichEmployees(companyIdentifiers, { onProgress });
         results.employees = byIdentifier;
     }
     if (wantEmployees && results.employees) {
@@ -2036,7 +2037,9 @@ async function enrichScrapedFile(filename, types, options = {}) {
             }
         }
         const urls = [...new Set(allUrls)];
-        const { byIdentifier: profileByUrl } = await enrichProfiles(urls);
+        // Profile scraping starts its own count from zero (a separate stage from
+        // employees above), so report progress in terms of profiles scraped.
+        const { byIdentifier: profileByUrl } = await enrichProfiles(urls, { onProgress });
         results.profile = profileByUrl;
         cascade = { scopedByKey, profileByUrl, scope, profileCap: cap };
     }

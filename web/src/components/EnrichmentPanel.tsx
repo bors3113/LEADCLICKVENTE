@@ -103,6 +103,12 @@ interface EnrichResult {
   shortfall?: number;
 }
 
+// Enrichment runs detached on the backend (see runEnrichmentJob in
+// scraperController.js), so the in-flight job id is persisted here to survive
+// navigation away from this page and back — the panel resumes polling
+// whichever job was last started instead of losing track of it.
+const ACTIVE_JOB_STORAGE_KEY = 'lcv:enrichmentJobId';
+
 export function EnrichmentPanel() {
   const [resultFiles, setResultFiles] = useState<ResultFile[]>([]);
   const [filesLoading, setFilesLoading] = useState(true);
@@ -111,6 +117,8 @@ export function EnrichmentPanel() {
   const [scope, setScope] = useState<CascadeScope>('capped');
   const [profileCap, setProfileCap] = useState(10);
   const [loading, setLoading] = useState(false);
+  const [activeEnrichJobId, setActiveEnrichJobId] = useState<string | null>(null);
+  const [liveCount, setLiveCount] = useState<number | null>(null);
   const [result, setResult] = useState<EnrichResult | null>(null);
   const [balance, setBalance] = useState<number | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
@@ -134,6 +142,77 @@ export function EnrichmentPanel() {
       .then(data => setBalance(data.totalAvailable ?? 0))
       .catch(() => {});
   }, []);
+
+  // Resume tracking a job that was already running when this page was last
+  // left (navigation doesn't stop it — see runEnrichmentJob on the backend).
+  useEffect(() => {
+    const savedJobId = window.localStorage.getItem(ACTIVE_JOB_STORAGE_KEY);
+    if (savedJobId) {
+      setActiveEnrichJobId(savedJobId);
+      setLoading(true);
+    }
+  }, []);
+
+  // Poll the in-flight job's status until it completes or fails, independent
+  // of whether the fetch that started it is still around.
+  useEffect(() => {
+    if (!activeEnrichJobId) return;
+
+    let cancelled = false;
+
+    async function poll() {
+      try {
+        const res = await fetch(`/api/enrich/status?jobId=${activeEnrichJobId}`);
+        const data = await res.json();
+        if (cancelled) return;
+
+        if (!res.ok) {
+          setResult({ success: false, error: data.error ?? 'Failed to check enrichment status' });
+          setLoading(false);
+          setActiveEnrichJobId(null);
+          setLiveCount(null);
+          window.localStorage.removeItem(ACTIVE_JOB_STORAGE_KEY);
+          return;
+        }
+
+        if (data.status === 'completed') {
+          setResult({
+            success: true,
+            fileName: data.fileName,
+            downloadUrl: data.downloadUrl,
+            enrichedCount: data.enrichedCount,
+            creditsCharged: data.creditsCharged,
+          });
+          setLoading(false);
+          setActiveEnrichJobId(null);
+          setLiveCount(null);
+          window.localStorage.removeItem(ACTIVE_JOB_STORAGE_KEY);
+          fetch('/api/enrich')
+            .then(r => r.json())
+            .then(d => setBalance(d.totalAvailable ?? 0))
+            .catch(() => {});
+        } else if (data.status === 'failed') {
+          setResult({ success: false, error: 'Enrichment job failed. No credits were charged for incomplete work.' });
+          setLoading(false);
+          setActiveEnrichJobId(null);
+          setLiveCount(null);
+          window.localStorage.removeItem(ACTIVE_JOB_STORAGE_KEY);
+        } else {
+          // status === 'running' or 'queued': keep polling, update the live count
+          if (typeof data.liveCount === 'number') setLiveCount(data.liveCount);
+        }
+      } catch {
+        // Transient network error — keep polling, don't give up on one failed check.
+      }
+    }
+
+    poll();
+    const interval = setInterval(poll, 4000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [activeEnrichJobId]);
 
   const cascadeSelected = types.includes('profile');
 
@@ -220,8 +299,12 @@ export function EnrichmentPanel() {
 
     setLoading(true);
     setResult(null);
+    setLiveCount(null);
 
     try {
+      // This resolves as soon as the job is created — the backend responds
+      // (202) before running the actual Apify work, so enrichment survives
+      // navigating away. Progress is tracked via polling below, not this call.
       const res = await fetch('/api/enrich', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -236,19 +319,17 @@ export function EnrichmentPanel() {
       const data = await res.json();
       if (res.status === 402) {
         setResult({ success: false, insufficientCredits: true, ...data });
+        setLoading(false);
+      } else if (!res.ok || !data.jobId) {
+        setResult({ success: false, error: data.error ?? 'Failed to start enrichment' });
+        setLoading(false);
       } else {
-        setResult({ ...data, success: res.ok });
-        if (res.ok) {
-          // Refresh credit balance
-          fetch('/api/enrich')
-            .then(r => r.json())
-            .then(d => setBalance(d.totalAvailable ?? 0))
-            .catch(() => {});
-        }
+        window.localStorage.setItem(ACTIVE_JOB_STORAGE_KEY, data.jobId);
+        setActiveEnrichJobId(data.jobId);
+        // loading stays true; the polling effect above takes over from here.
       }
     } catch (err: unknown) {
       setResult({ success: false, error: err instanceof Error ? err.message : 'Unknown error' });
-    } finally {
       setLoading(false);
     }
   }
@@ -610,7 +691,9 @@ export function EnrichmentPanel() {
             {loading ? (
               <>
                 <Loader2 className="h-4 w-4 animate-spin" />
-                Enriching Lead Data…
+                {liveCount !== null && liveCount > 0
+                  ? `Enriching… ${liveCount.toLocaleString()} scraped so far`
+                  : 'Enriching Lead Data…'}
               </>
             ) : (
               <>
@@ -619,7 +702,32 @@ export function EnrichmentPanel() {
               </>
             )}
           </button>
+
+          {loading && (
+            <p className="text-center text-[11px] text-muted-foreground">
+              This keeps running on the server — feel free to navigate away or close this tab.
+            </p>
+          )}
         </div>
+
+        {/* Live progress */}
+        {loading && (
+          <div className="rounded-xl border border-primary/20 bg-primary/5 p-5 shadow-sm space-y-2 animate-in fade-in duration-200">
+            <div className="flex items-center gap-2 font-bold text-primary text-sm">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              Enrichment in progress
+            </div>
+            <div className="flex items-baseline gap-1.5">
+              <span className="text-3xl font-black text-foreground font-mono tabular-nums">
+                {liveCount !== null ? liveCount.toLocaleString() : '—'}
+              </span>
+              <span className="text-xs text-muted-foreground">items scraped so far</span>
+            </div>
+            <p className="text-[11px] text-muted-foreground">
+              Pulled live from the Apify run every few seconds. Safe to leave this page.
+            </p>
+          </div>
+        )}
 
         {/* Results log */}
         {result && (

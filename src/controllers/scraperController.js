@@ -416,96 +416,114 @@ const scraperController = {
             }
         }
 
-        try {
-            const { enrichedCount, creditsByType, cascade, outputPath, r2Key } =
-                await enrichScrapedFile(filename, types, { scope, profileCap, plannedCascade });
+        // Respond immediately once the job is recorded, then keep running the
+        // actual Apify work in the background. This is deliberate: enrichment
+        // (especially the profile cascade) can take minutes, and previously the
+        // HTTP response — and therefore the work itself — was tied to the
+        // lifetime of the browser's fetch, so navigating away from the enrich
+        // page killed the job. Detaching here matches how scraping jobs are
+        // dispatched (see web/src/lib/scraperQueue.ts dispatchQueue).
+        res.status(202).json({
+            success: true,
+            jobId: jobRecord?.id || null,
+            status: 'running',
+        });
 
-            const outputBasename = path.basename(outputPath);
-
-            // Compute total credits charged (success only — counted inside enrichScrapedFile).
-            // Cascade uses flat-base-per-company + per-scraped-profile pricing; the
-            // non-cascade types keep their per-row credit costs.
-            let creditsCharged =
-                (creditsByType.company || 0) * config.apify.creditCost.company +
-                (creditsByType.employees || 0) * config.apify.creditCost.employees;
-            if (cascade) {
-                const perProfileRate = config.apify.cascadePerProfileByScope[cascade.scope]
-                    ?? config.apify.cascadePerProfileByScope.all;
-                creditsCharged +=
-                    cascade.companyCount * config.apify.cascadeBasePerCompany +
-                    cascade.profilesScraped * perProfileRate;
-            } else {
-                creditsCharged += (creditsByType.profile || 0) * config.apify.creditCost.profile;
-            }
-
-            // Deduct the charge from the org's PAYG balance (best-effort, raw SQL —
-            // see getAvailableCredits for why the column isn't via the Prisma model).
-            if (organizationId && creditsCharged > 0) {
-                try {
-                    await prisma.$executeRaw`
-                        UPDATE organizations
-                        SET enrichment_credit_balance = COALESCE(enrichment_credit_balance, 0) - ${creditsCharged}
-                        WHERE id = ${organizationId}::uuid`;
-                } catch (balErr) {
-                    console.error('Failed to decrement enrichment_credit_balance:', balErr);
-                }
-            }
-
-            // Persist enrichment_results summary and mark job completed.
-            if (jobRecord) {
-                try {
-                    // Write one result row per type as a summary entry.
-                    const resultRows = Object.entries(creditsByType).map(([type, count]) => ({
-                        job_id: jobRecord.id,
-                        identifier: `${type}:batch`,
-                        type,
-                        linkedin_data: { enrichedCount: count },
-                    }));
-                    if (resultRows.length > 0) {
-                        await prisma.enrichment_results.createMany({ data: resultRows });
-                    }
-                    await prisma.enrichment_jobs.update({
-                        where: { id: jobRecord.id },
-                        data: {
-                            status: 'completed',
-                            enriched_count: enrichedCount,
-                            credits_charged: creditsCharged,
-                            output_file: outputBasename,
-                            completed_at: new Date(),
-                        },
-                    });
-                } catch (dbErr) {
-                    console.error('Failed to update enrichment_job record:', dbErr);
-                }
-            }
-
-            return res.json({
-                success: true,
-                jobId: jobRecord?.id || null,
-                fileName: outputBasename,
-                downloadUrl: `/api/download?file=${outputBasename}`,
-                r2Key: r2Key || null,
-                enrichedCount,
-                creditsByType,
-                creditsCharged,
-                cascade: cascade || null,
-            });
-
-        } catch (error) {
-            console.error('Enrichment error:', error);
-
-            if (jobRecord) {
-                try {
-                    await prisma.enrichment_jobs.update({
-                        where: { id: jobRecord.id },
-                        data: { status: 'failed', completed_at: new Date() },
-                    });
-                } catch (_) {}
-            }
-
-            return res.status(500).json({ error: error.message });
-        }
+        runEnrichmentJob({ filename, types, scope, profileCap, plannedCascade, organizationId, jobRecord })
+            .catch((err) => console.error('Background enrichment job failed:', err));
     },
 };
+
+// Runs the actual enrichment work after the HTTP response has already been
+// sent (see enrichFile above). Persists success/failure to enrichment_jobs so
+// the frontend can poll for status independent of any single request.
+async function runEnrichmentJob({ filename, types, scope, profileCap, plannedCascade, organizationId, jobRecord }) {
+    try {
+        // Live progress: total_rows is otherwise-unused on enrichment_jobs, so it
+        // doubles here as "items scraped so far in the current Apify run" — polled
+        // by the frontend via GET /api/enrich/status. Writes are best-effort and
+        // never allowed to fail the enrichment itself.
+        const onProgress = jobRecord
+            ? (count) => {
+                prisma.enrichment_jobs
+                    .update({ where: { id: jobRecord.id }, data: { total_rows: count } })
+                    .catch(() => {});
+            }
+            : undefined;
+
+        const { enrichedCount, creditsByType, cascade, outputPath, r2Key } =
+            await enrichScrapedFile(filename, types, { scope, profileCap, plannedCascade, onProgress });
+
+        const outputBasename = path.basename(outputPath);
+
+        // Compute total credits charged (success only — counted inside enrichScrapedFile).
+        // Cascade uses flat-base-per-company + per-scraped-profile pricing; the
+        // non-cascade types keep their per-row credit costs.
+        let creditsCharged =
+            (creditsByType.company || 0) * config.apify.creditCost.company +
+            (creditsByType.employees || 0) * config.apify.creditCost.employees;
+        if (cascade) {
+            const perProfileRate = config.apify.cascadePerProfileByScope[cascade.scope]
+                ?? config.apify.cascadePerProfileByScope.all;
+            creditsCharged +=
+                cascade.companyCount * config.apify.cascadeBasePerCompany +
+                cascade.profilesScraped * perProfileRate;
+        } else {
+            creditsCharged += (creditsByType.profile || 0) * config.apify.creditCost.profile;
+        }
+
+        // Deduct the charge from the org's PAYG balance (best-effort, raw SQL —
+        // see getAvailableCredits for why the column isn't via the Prisma model).
+        if (organizationId && creditsCharged > 0) {
+            try {
+                await prisma.$executeRaw`
+                    UPDATE organizations
+                    SET enrichment_credit_balance = COALESCE(enrichment_credit_balance, 0) - ${creditsCharged}
+                    WHERE id = ${organizationId}::uuid`;
+            } catch (balErr) {
+                console.error('Failed to decrement enrichment_credit_balance:', balErr);
+            }
+        }
+
+        // Persist enrichment_results summary and mark job completed.
+        if (jobRecord) {
+            try {
+                // Write one result row per type as a summary entry.
+                const resultRows = Object.entries(creditsByType).map(([type, count]) => ({
+                    job_id: jobRecord.id,
+                    identifier: `${type}:batch`,
+                    type,
+                    linkedin_data: { enrichedCount: count },
+                }));
+                if (resultRows.length > 0) {
+                    await prisma.enrichment_results.createMany({ data: resultRows });
+                }
+                await prisma.enrichment_jobs.update({
+                    where: { id: jobRecord.id },
+                    data: {
+                        status: 'completed',
+                        enriched_count: enrichedCount,
+                        credits_charged: creditsCharged,
+                        output_file: outputBasename,
+                        completed_at: new Date(),
+                    },
+                });
+            } catch (dbErr) {
+                console.error('Failed to update enrichment_job record:', dbErr);
+            }
+        }
+    } catch (error) {
+        console.error('Enrichment error:', error);
+
+        if (jobRecord) {
+            try {
+                await prisma.enrichment_jobs.update({
+                    where: { id: jobRecord.id },
+                    data: { status: 'failed', completed_at: new Date() },
+                });
+            } catch (_) {}
+        }
+    }
+}
 
 module.exports = scraperController; 

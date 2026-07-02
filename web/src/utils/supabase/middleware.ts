@@ -51,7 +51,7 @@ export async function updateSession(request: NextRequest) {
   const protectedRoutes = ['/dashboard', '/projects', '/settings', '/billing']
   
   // Define auth routes that redirect to dashboard if already logged in
-  const authRoutes = ['/login', '/register', '/reset-password']
+  const authRoutes = ['/login', '/register']
 
   const isProtectedRoute = protectedRoutes.some(route => request.nextUrl.pathname.startsWith(route))
   const isAuthRoute = authRoutes.some(route => request.nextUrl.pathname.startsWith(route))
